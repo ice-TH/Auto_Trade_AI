@@ -1,7 +1,7 @@
 # Antigravity Active Trading Playbook (Master Unified View)
 *Automated AI Knowledge Base - รวมศูนย์กฎความปลอดภัยกลางและคู่มือเทรดเฉพาะสินทรัพย์*
 
-- **Last Compiled:** 2026-11-24 18:54:54 (BKK UTC+7)
+- **Last Compiled:** 2026-11-24 19:52:19 (BKK UTC+7)
 - **Target Environment:** Exness MT5 (Local IPC)
 - **Architecture:** Modular Playbook (Core Safety + Asset Extensions)
 
@@ -246,6 +246,19 @@
   - **3. เพดานจำกัดความเสี่ยงและการถอยไปใช้ Pending Limit (Hard SL Cap $\le \$8.00$):**
     - หากสภาวะตลาดมีความผันผวนสูงจนระยะ SL เชิงโครงสร้างกว้างเกิน $8.00 USD ระบบจะระงับการเข้า Market Order ทันที
     - ระบบจะสลับไปแนะนำโหมด `ACTIONABLE_BUY_LIMIT` หรือ `ACTIONABLE_SELL_LIMIT` ดักรอที่ระดับ **Fibonacci 65.0% OTE หรือกึ่งกลางโซน** เพื่อลดระยะ SL ให้อยู่ในกรอบปลอดภัย
+
+- **[XAU-RULE-23] Dynamic Limit Order Lifecycle Management (วงจรบริหารจัดการคำสั่ง Limit อัตโนมัติ)**
+  - **1. การวาง Pending Limit ล่วงหน้าที่จุดได้เปรียบ (Strategic Pre-placement):**
+    - วาง Buy Limit / Sell Limit ดักล่วงหน้าที่ระดับ Fibonacci 65.0% OTE หรือกึ่งกลางโซน Base (Discount 50%) พร้อมตั้ง SL ($\le \$8.00$) และ TP ($R:R \ge 1.50$) ในตัวเสมอ
+    - ไม่ต้องเสียเวลารอแท่งเทียนปิด ช่วยให้ไม่ตกรถตอนตลาดสะบัดไส้กวาดสภาพคล่อง (Fast Wick Match)
+  - **2. วงจรการตรวจสอบในแต่ละลูป (Reconciliation in 60s - 90s Schedule Loop):**
+    - ในแต่ละรอบที่บอทประมวลผล จะตรวจสอบคำสั่ง Limit ที่ค้างอยู่ 4 ประการ:
+      - (1) **CANCEL ทันที** หากมีข่าวแรง (News Blackout) หรือ Spread ขยายเกิน $0.40 USD
+      - (2) **CANCEL ทันที** หากเกิดแท่งเทียนทิ้งตัวรุนแรง (Falling Knife สำหรับ Buy Limit หรือ Rocket Surge สำหรับ Sell Limit) เพื่อไม่ให้โดนทับ
+      - (3) **CANCEL ทันที** หากโครงสร้างโซนถูกทำลาย (ราคาหลุดทะลุแนวรับ/ต้านหลัก)
+      - (4) **CANCEL ทันที** หากราคาวิ่งหนีโซนออกไปเกิน $1.5\times\text{ATR}$ หรือครบอายุต่อเวลา 5 ครั้ง (`Max Renewals <= 5`)
+  - **3. การส่งมอบไม้ไปยัง Position Manager:**
+    - ทันทีที่ออเดอร์ Limit ถูกเกี่ยว (Filled) ระบบ Position Manager จะเข้ามารับช่วงต่อทันที เพื่อเลื่อน SL บังทุน (Breakeven Lock) เมื่อกำไรแตะ $+1.0\times R$
 
 
 ---

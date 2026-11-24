@@ -4,9 +4,10 @@ Coordinates between Strategy Scanner, News Blackout Guard, and MT5 Client.
 Implements:
 1. Dead Man's Switch (MT5 Expiry TTL = 10m)
 2. Agent Lease Renewal (Max renewals <= 5)
-3. Discount 50% Entry inside Demand/Supply Zone
-4. Zero Ghost Policy (Auto-cancels if price leaves or structure breaks)
+3. Discount 50% / Fibo 65% OTE Entry inside Demand/Supply Zone
+4. Zero Ghost Policy (Auto-cancels if price leaves, structure breaks, or falling knife occurs)
 5. News Blackout & Spread Expansion Safeguards
+6. Hard SL Cap enforcement (<= MAX_GOLD_SL_USD = $8.00)
 """
 
 import logging
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 
 from src.execution.mt5_client import MT5Client, mt5_client
 from src.risk.news_guard import is_news_blackout, is_spread_acceptable, is_volatility_spike
+from src.analysis.gold_strategy import MAX_GOLD_SL_USD, MIN_GOLD_RR_RATIO
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +57,16 @@ def manage_gold_limits(
     in_news, news_reason = is_news_blackout()
     spread_ok, spread_reason = is_spread_acceptable(spread)
     
-    # 3. Handle existing pending orders first (Reconciliation & Lease Renewal)
+    nearest_demand = gold_setup.get("nearest_demand") or (gold_setup.get("demand_zones", [None])[0] if gold_setup.get("demand_zones") else None)
+    nearest_supply = gold_setup.get("nearest_supply") or (gold_setup.get("supply_zones", [None])[0] if gold_setup.get("supply_zones") else None)
+    
+    # 3. Handle existing pending orders first (Reconciliation, Safety & Lease Renewal)
     for order in list(pending_orders):
         ticket = order["ticket"]
         meta = _PENDING_ORDER_METADATA.get(ticket, {"renewal_count": 0, "created_at": datetime.now(timezone.utc)})
         order_price = order["price"]
         order_dir = order["direction"]
+        order_sl = order.get("sl") or order.get("sl_price", 0.0)
         
         # Reason to Cancel 1: News Blackout Active
         if in_news:
@@ -75,8 +81,36 @@ def manage_gold_limits(
             _PENDING_ORDER_METADATA.pop(ticket, None)
             actions_taken.append(f"CANCELLED #{ticket}: {spread_reason}")
             continue
+
+        # Reason to Cancel 3: Violent Candle (Falling Knife on BUY or Rocket Surge on SELL)
+        if order_dir == "BUY" and setup_status == "REJECTED_FALLING_KNIFE":
+            cli.cancel_pending_order(ticket)
+            _PENDING_ORDER_METADATA.pop(ticket, None)
+            actions_taken.append(f"CANCELLED #{ticket}: ตรวจพบแท่งเทียนทิ้งตัวรุนแรง (Falling Knife) ยกเลิก Buy Limit เพื่อป้องกันความเสียหาย")
+            continue
+        if order_dir == "SELL" and setup_status == "REJECTED_ROCKET_SURGE":
+            cli.cancel_pending_order(ticket)
+            _PENDING_ORDER_METADATA.pop(ticket, None)
+            actions_taken.append(f"CANCELLED #{ticket}: ตรวจพบแท่งเทียนพุ่งตัวรุนแรง (Rocket Surge) ยกเลิก Sell Limit เพื่อป้องกันความเสียหาย")
+            continue
+
+        # Reason to Cancel 4: Structural Invalidation (Price broke past SL / Zone floor/ceiling)
+        if order_dir == "BUY":
+            demand_floor = nearest_demand["zone_low"] if nearest_demand else (order_price - 5.0)
+            if current_price < (demand_floor - (current_atr * 0.50)) or (order_sl > 0 and current_price <= order_sl):
+                cli.cancel_pending_order(ticket)
+                _PENDING_ORDER_METADATA.pop(ticket, None)
+                actions_taken.append(f"CANCELLED #{ticket}: โครงสร้าง Demand ถูกทำลาย (ราคา ${current_price:.2f} ทะลุแนวรับ ${demand_floor:.2f})")
+                continue
+        elif order_dir == "SELL":
+            supply_ceiling = nearest_supply["zone_high"] if nearest_supply else (order_price + 5.0)
+            if current_price > (supply_ceiling + (current_atr * 0.50)) or (order_sl > 0 and current_price >= order_sl):
+                cli.cancel_pending_order(ticket)
+                _PENDING_ORDER_METADATA.pop(ticket, None)
+                actions_taken.append(f"CANCELLED #{ticket}: โครงสร้าง Supply ถูกทำลาย (ราคา ${current_price:.2f} ทะลุแนวต้าน ${supply_ceiling:.2f})")
+                continue
             
-        # Reason to Cancel 3: Price drifted away (Order abandoned)
+        # Reason to Cancel 5: Price drifted away (Order abandoned)
         drift = abs(current_price - order_price)
         if drift > (MAX_PRICE_DRIFT_ATR * current_atr):
             cli.cancel_pending_order(ticket)
@@ -84,7 +118,7 @@ def manage_gold_limits(
             actions_taken.append(f"CANCELLED #{ticket}: ราคาวิ่งหนีโซนเกิน {MAX_PRICE_DRIFT_ATR}x ATR (${drift:.2f} > ${MAX_PRICE_DRIFT_ATR*current_atr:.2f})")
             continue
             
-        # Reason to Cancel 4: Maximum Renewal Cap reached (Prevent Stale Zone)
+        # Reason to Cancel 6: Maximum Renewal Cap reached (Prevent Stale Zone)
         if meta["renewal_count"] >= MAX_RENEWALS_ALLOWED:
             cli.cancel_pending_order(ticket)
             _PENDING_ORDER_METADATA.pop(ticket, None)
@@ -105,39 +139,55 @@ def manage_gold_limits(
     # Conditions:
     # - No existing pending order
     # - Not in News Blackout & Spread is normal
-    # - Setup is WAITING_FOR_REJECTION or price is near zone
-    # - Has valid demand or supply zone
+    # - Has valid setup / zone
     if len(pending_orders) == 0 and not in_news and spread_ok:
-        nearest_demand = gold_setup.get("nearest_demand") or (gold_setup.get("demand_zones", [None])[0] if gold_setup.get("demand_zones") else None)
-        nearest_supply = gold_setup.get("nearest_supply") or (gold_setup.get("supply_zones", [None])[0] if gold_setup.get("supply_zones") else None)
-        
         fibo_gz = gold_setup.get("fibo_golden_zone", {})
+        exec_mode = gold_setup.get("execution_mode", "MARKET")
+        rec_entry = gold_setup.get("recommended_entry")
+        rec_sl = gold_setup.get("recommended_sl")
+        rec_tp = gold_setup.get("recommended_tp")
         
-        # A. Buy Limit at Demand Midpoint (or Golden Zone Confluence Overlap)
-        if setup_status == "WAITING_FOR_REJECTION" and nearest_demand:
-            # Check Fibo Golden Zone overlap
-            conf = nearest_demand.get("fibo_confluence", {})
-            is_double = conf.get("double_confluence", False)
-            if conf.get("has_confluence"):
-                # Use Fibo 65.0% OTE if inside overlap, else overlap midpoint
-                fibo_65 = fibo_gz.get("fibo_650")
-                if fibo_65 and conf["overlap_low"] <= fibo_65 <= conf["overlap_high"]:
-                    discount_entry = round(fibo_65, 2)
-                    limit_comment = "SmartBuyLimit [Fibo 65% OTE]" if not is_double else "SmartBuyLimit [⭐⭐ Double Fibo]"
-                else:
-                    discount_entry = round(conf.get("overlap_mid", (conf["overlap_high"] + conf["overlap_low"]) / 2.0), 2)
-                    limit_comment = "SmartBuyLimit [Fibo Golden Zone]" if not is_double else "SmartBuyLimit [⭐⭐ Double Fibo]"
+        # A. Buy Limit Evaluation
+        can_place_buy = (
+            setup_status == "ACTIONABLE_BUY_LIMIT"
+            or (setup_status in ("WAITING_FOR_REJECTION", "REJECTED_SL_TOO_WIDE") and nearest_demand and direction in ("BUY", "NEUTRAL"))
+        )
+        if can_place_buy and setup_status != "REJECTED_FALLING_KNIFE" and nearest_demand:
+            if setup_status == "ACTIONABLE_BUY_LIMIT" and rec_entry and rec_sl and rec_tp:
+                discount_entry = rec_entry
+                sl_price = rec_sl
+                tp_price = rec_tp
+                limit_comment = "SmartBuyLimit [Fibo 65% OTE]"
             else:
-                discount_entry = round(nearest_demand["zone_mid"], 2)
-                limit_comment = "SmartBuyLimit [Discount 50%]"
+                conf = nearest_demand.get("fibo_confluence", {})
+                is_double = conf.get("double_confluence", False)
+                if conf.get("has_confluence"):
+                    fibo_65 = fibo_gz.get("fibo_650")
+                    if fibo_65 and conf.get("overlap_low", 0) <= fibo_65 <= conf.get("overlap_high", 99999):
+                        discount_entry = round(fibo_65, 2)
+                        limit_comment = "SmartBuyLimit [Fibo 65% OTE]" if not is_double else "SmartBuyLimit [⭐⭐ Double Fibo]"
+                    else:
+                        discount_entry = round(conf.get("overlap_mid", (conf.get("overlap_high", nearest_demand["zone_high"]) + conf.get("overlap_low", nearest_demand["zone_low"])) / 2.0), 2)
+                        limit_comment = "SmartBuyLimit [Fibo Golden Zone]" if not is_double else "SmartBuyLimit [⭐⭐ Double Fibo]"
+                else:
+                    discount_entry = round(nearest_demand.get("zone_mid", (nearest_demand["zone_high"] + nearest_demand["zone_low"]) / 2.0), 2)
+                    limit_comment = "SmartBuyLimit [Discount 50%]"
 
-            # SL strictly below zone_low with moat buffer
-            sl_price = round(nearest_demand["zone_low"] - (current_atr * 0.35), 2)
-            tp_price = round(current_price + (current_atr * 2.5), 2)
+                sl_price = round(nearest_demand["zone_low"] - (current_atr * 0.35), 2)
+                sl_dist = discount_entry - sl_price
+                
+                # Realistic TP targeting next supply or 2.0x Risk
+                target_tp = round(discount_entry + (sl_dist * 2.0), 2)
+                if nearest_supply and nearest_supply["zone_low"] > discount_entry:
+                    target_tp = min(target_tp, round(nearest_supply["zone_low"] - (current_atr * 0.35), 2))
+                tp_price = target_tp
+
             sl_dist = discount_entry - sl_price
+            rew_dist = tp_price - discount_entry
+            rr = (rew_dist / sl_dist) if sl_dist > 0 else 0.0
             
-            # Ensure SL distance fits within $6.00 cap
-            if sl_dist <= 6.00 and sl_dist > 0:
+            # Ensure SL distance fits within MAX_GOLD_SL_USD cap ($8.00) and R:R >= 1.50
+            if 0 < sl_dist <= MAX_GOLD_SL_USD and rr >= MIN_GOLD_RR_RATIO and discount_entry < current_price:
                 res = cli.send_limit_order(
                     symbol=symbol,
                     direction="BUY",
@@ -154,29 +204,48 @@ def manage_gold_limits(
                         "renewal_count": 0,
                         "created_at": datetime.now(timezone.utc)
                     }
-                    actions_taken.append(f"PLACED BUY_LIMIT #{new_ticket} ที่ ${discount_entry:.2f} ({limit_comment}, SL: ${sl_price:.2f}, Moat: ${sl_dist:.2f})")
+                    actions_taken.append(f"PLACED BUY_LIMIT #{new_ticket} ที่ ${discount_entry:.2f} ({limit_comment}, SL: ${sl_price:.2f}, Moat: ${sl_dist:.2f}, R:R: {rr:.2f})")
                     
-        # B. Sell Limit at Supply Midpoint (or Golden Zone Confluence Overlap)
-        elif setup_status == "WAITING_FOR_REJECTION" and nearest_supply:
-            conf = nearest_supply.get("fibo_confluence", {})
-            is_double = conf.get("double_confluence", False)
-            if conf.get("has_confluence"):
-                fibo_65 = fibo_gz.get("fibo_650")
-                if fibo_65 and conf["overlap_low"] <= fibo_65 <= conf["overlap_high"]:
-                    discount_entry = round(fibo_65, 2)
-                    limit_comment = "SmartSellLimit [Fibo 65% OTE]" if not is_double else "SmartSellLimit [⭐⭐ Double Fibo]"
-                else:
-                    discount_entry = round(conf.get("overlap_mid", (conf["overlap_high"] + conf["overlap_low"]) / 2.0), 2)
-                    limit_comment = "SmartSellLimit [Fibo Golden Zone]" if not is_double else "SmartSellLimit [⭐⭐ Double Fibo]"
+        # B. Sell Limit Evaluation
+        can_place_sell = (
+            setup_status == "ACTIONABLE_SELL_LIMIT"
+            or (setup_status in ("WAITING_FOR_REJECTION", "REJECTED_SL_TOO_WIDE") and nearest_supply and direction in ("SELL", "NEUTRAL"))
+        )
+        if can_place_sell and setup_status != "REJECTED_ROCKET_SURGE" and nearest_supply:
+            if setup_status == "ACTIONABLE_SELL_LIMIT" and rec_entry and rec_sl and rec_tp:
+                discount_entry = rec_entry
+                sl_price = rec_sl
+                tp_price = rec_tp
+                limit_comment = "SmartSellLimit [Fibo 65% OTE]"
             else:
-                discount_entry = round(nearest_supply["zone_mid"], 2)
-                limit_comment = "SmartSellLimit [Discount 50%]"
+                conf = nearest_supply.get("fibo_confluence", {})
+                is_double = conf.get("double_confluence", False)
+                if conf.get("has_confluence"):
+                    fibo_65 = fibo_gz.get("fibo_650")
+                    if fibo_65 and conf.get("overlap_low", 0) <= fibo_65 <= conf.get("overlap_high", 99999):
+                        discount_entry = round(fibo_65, 2)
+                        limit_comment = "SmartSellLimit [Fibo 65% OTE]" if not is_double else "SmartSellLimit [⭐⭐ Double Fibo]"
+                    else:
+                        discount_entry = round(conf.get("overlap_mid", (conf.get("overlap_high", nearest_supply["zone_high"]) + conf.get("overlap_low", nearest_supply["zone_low"])) / 2.0), 2)
+                        limit_comment = "SmartSellLimit [Fibo Golden Zone]" if not is_double else "SmartSellLimit [⭐⭐ Double Fibo]"
+                else:
+                    discount_entry = round(nearest_supply.get("zone_mid", (nearest_supply["zone_high"] + nearest_supply["zone_low"]) / 2.0), 2)
+                    limit_comment = "SmartSellLimit [Discount 50%]"
 
-            sl_price = round(nearest_supply["zone_high"] + (current_atr * 0.35), 2)
-            tp_price = round(current_price - (current_atr * 2.5), 2)
+                sl_price = round(nearest_supply["zone_high"] + (current_atr * 0.35), 2)
+                sl_dist = sl_price - discount_entry
+                
+                target_tp = round(discount_entry - (sl_dist * 2.0), 2)
+                if nearest_demand and nearest_demand["zone_high"] < discount_entry:
+                    target_tp = max(target_tp, round(nearest_demand["zone_high"] + (current_atr * 0.35), 2))
+                tp_price = target_tp
+
             sl_dist = sl_price - discount_entry
+            rew_dist = discount_entry - tp_price
+            rr = (rew_dist / sl_dist) if sl_dist > 0 else 0.0
             
-            if sl_dist <= 6.00 and sl_dist > 0:
+            # Ensure SL distance fits within MAX_GOLD_SL_USD cap ($8.00) and R:R >= 1.50
+            if 0 < sl_dist <= MAX_GOLD_SL_USD and rr >= MIN_GOLD_RR_RATIO and discount_entry > current_price:
                 res = cli.send_limit_order(
                     symbol=symbol,
                     direction="SELL",
@@ -193,8 +262,7 @@ def manage_gold_limits(
                         "renewal_count": 0,
                         "created_at": datetime.now(timezone.utc)
                     }
-                    actions_taken.append(f"PLACED SELL_LIMIT #{new_ticket} ที่ ${discount_entry:.2f} ({limit_comment}, SL: ${sl_price:.2f}, Moat: ${sl_dist:.2f})")
-                    actions_taken.append(f"PLACED SELL_LIMIT #{new_ticket} ที่ ${discount_entry:.2f} (SL: ${sl_price:.2f}, Moat: ${sl_dist:.2f})")
+                    actions_taken.append(f"PLACED SELL_LIMIT #{new_ticket} ที่ ${discount_entry:.2f} ({limit_comment}, SL: ${sl_price:.2f}, Moat: ${sl_dist:.2f}, R:R: {rr:.2f})")
 
     return {
         "symbol": symbol,
