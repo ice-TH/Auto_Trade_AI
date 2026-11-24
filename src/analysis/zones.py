@@ -138,21 +138,30 @@ def build_sr_zones(
     for z in zones:
         touches = 0
         is_broken = False
-        
+        reclaimed_after_break = False
+
         # Only evaluate bars AFTER the zone was confirmed
         for b in bars:
             if z.confirmed_at and b.open_time < z.confirmed_at:
                 continue
 
-            # Touch check
-            if b.high >= z.price_low and b.low <= z.price_high:
+            # Touch check (only count before permanent invalidation)
+            if not reclaimed_after_break and b.high >= z.price_low and b.low <= z.price_high:
                 touches += 1
 
-            # Invalidation / Breakout check
-            if z.zone_type == "RESISTANCE" and b.close > (z.price_high + break_buffer):
-                is_broken = True
-            elif z.zone_type == "SUPPORT" and b.close < (z.price_low - break_buffer):
-                is_broken = True
+            # Sequential Invalidation / Role Reversal lifecycle check
+            if z.zone_type == "RESISTANCE":
+                if not is_broken and b.close > (z.price_high + break_buffer):
+                    is_broken = True  # Broken upward -> potential support role reversal
+                elif is_broken and b.close < (z.price_low - break_buffer):
+                    # Chopped back below after breakout -> zone is exhausted/whipsawed
+                    reclaimed_after_break = True
+            elif z.zone_type == "SUPPORT":
+                if not is_broken and b.close < (z.price_low - break_buffer):
+                    is_broken = True  # Broken downward -> potential resistance role reversal
+                elif is_broken and b.close > (z.price_high + break_buffer):
+                    # Chopped back above after breakdown -> zone is exhausted/whipsawed
+                    reclaimed_after_break = True
 
         z.touch_count = touches
         z.is_broken = is_broken
@@ -165,11 +174,14 @@ def build_sr_zones(
         else:
             z.freshness = "EXHAUSTED"
 
-        # Check for role reversal (Broken resistance becomes support)
-        if is_broken:
-            if z.zone_type == "RESISTANCE" and current_price > z.price_high:
+        # Check for clean role reversal (Broken once cleanly, never whipsawed back across)
+        if reclaimed_after_break:
+            z.is_active = False
+            z.is_role_reversed = False
+        elif is_broken:
+            if z.zone_type == "RESISTANCE" and current_price >= z.price_low:
                 z.is_role_reversed = True
-            elif z.zone_type == "SUPPORT" and current_price < z.price_low:
+            elif z.zone_type == "SUPPORT" and current_price <= z.price_high:
                 z.is_role_reversed = True
 
     # Sort zones by proximity to current price

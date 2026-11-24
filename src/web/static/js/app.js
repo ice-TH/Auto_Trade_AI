@@ -619,7 +619,7 @@ async function loadChartData(symbol, timeframe) {
   }
 }
 
-// Load S/R Zones
+// Load S/R Zones (Multi-Timeframe DAY & M15)
 async function loadZones(symbol) {
   try {
     const res = await fetch(`/api/zones/${symbol}`);
@@ -628,31 +628,64 @@ async function loadZones(symbol) {
     priceLines.forEach(pl => candleSeries.removePriceLine(pl));
     priceLines = [];
 
-    const showSR = document.getElementById("check-sr").checked;
+    const showDaySR = document.getElementById("check-sr")?.checked ?? true;
+    const showM15SR = document.getElementById("check-sr-m15")?.checked ?? true;
     const tbody = document.getElementById("zones-table-body");
-    tbody.innerHTML = "";
+    if (tbody) tbody.innerHTML = "";
 
+    // 1. Process DAY S/R Zones (Major Framework)
     const autoZones = data.auto_sr_zones || [];
     autoZones.forEach(z => {
-      const tr = document.createElement("tr");
       const isSup = z.zone_type === "SUPPORT";
-      tr.innerHTML = `
-        <td><span class="dime-plan-badge ${isSup ? 'badge-ready' : 'badge-rejected'}">${z.zone_type}</span></td>
-        <td style="font-weight: 700;">$${z.price_low.toFixed(2)} - $${z.price_high.toFixed(2)}</td>
-        <td>${z.touch_count} times</td>
-        <td><strong>${z.freshness}</strong></td>
-        <td>${z.is_broken ? '<span style="color: var(--dime-red); font-weight: 700;">BROKEN / FLIPPED</span>' : '<span style="color: var(--dime-green); font-weight: 700;">ACTIVE</span>'}</td>
-      `;
-      tbody.appendChild(tr);
+      if (tbody) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><span class="dime-plan-badge" style="background: rgba(0, 192, 118, 0.15); color: #00c076; font-weight: 800; margin-right: 4px;">DAY</span> <span class="dime-plan-badge ${isSup ? 'badge-ready' : 'badge-rejected'}">${z.zone_type}</span></td>
+          <td style="font-weight: 700;">$${z.price_low.toFixed(2)} - $${z.price_high.toFixed(2)}</td>
+          <td>${z.touch_count} times</td>
+          <td><strong>${z.freshness}</strong></td>
+          <td>${z.is_broken ? '<span style="color: var(--dime-red); font-weight: 700;">BROKEN / FLIPPED</span>' : '<span style="color: var(--dime-green); font-weight: 700;">ACTIVE</span>'}</td>
+        `;
+        tbody.appendChild(tr);
+      }
 
-      if (showSR && candleSeries) {
+      if (showDaySR && candleSeries) {
         const line = candleSeries.createPriceLine({
           price: z.price_mid,
           color: isSup ? "#00c076" : "#ef4444",
+          lineWidth: 2,
+          lineStyle: LightweightCharts.LineStyle.Solid,
+          axisLabelVisible: true,
+          title: `[DAY ${isSup ? 'SUP' : 'RES'}] $${z.price_mid.toFixed(1)}`,
+        });
+        priceLines.push(line);
+      }
+    });
+
+    // 2. Process M15 S/R Zones (Intraday Framework)
+    const m15Zones = data.m15_sr_zones || [];
+    m15Zones.forEach(z => {
+      const isSup = z.zone_type === "SUPPORT";
+      if (tbody) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><span class="dime-plan-badge" style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; font-weight: 800; margin-right: 4px;">M15</span> <span class="dime-plan-badge" style="background: ${isSup ? 'rgba(0, 229, 255, 0.2)' : 'rgba(255, 145, 0, 0.2)'}; color: ${isSup ? '#00e5ff' : '#ff9100'}; font-weight: 700;">${z.zone_type}</span></td>
+          <td style="font-weight: 700; color: ${isSup ? '#00e5ff' : '#ff9100'};">$${z.price_low.toFixed(2)} - $${z.price_high.toFixed(2)}</td>
+          <td>${z.touch_count} times</td>
+          <td><strong>${z.freshness}</strong></td>
+          <td>${z.is_broken ? '<span style="color: var(--dime-red); font-weight: 700;">BROKEN</span>' : '<span style="color: #00e5ff; font-weight: 700;">ACTIVE</span>'}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      if (showM15SR && candleSeries) {
+        const line = candleSeries.createPriceLine({
+          price: z.price_mid,
+          color: isSup ? "#00e5ff" : "#ff9100",
           lineWidth: 1,
           lineStyle: LightweightCharts.LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `${z.zone_type} [${z.freshness}]`,
+          title: `[M15 ${isSup ? 'SUP' : 'RES'}] $${z.price_mid.toFixed(1)}`,
         });
         priceLines.push(line);
       }

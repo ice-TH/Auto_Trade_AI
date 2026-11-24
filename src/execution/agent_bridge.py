@@ -112,12 +112,13 @@ def scan_btc_scalp() -> Dict[str, Any]:
         return {"error": "BTC scalper module is not installed or has been removed."}
 
 def scan_gold_strategy(manage_limits: bool = True, manage_positions: bool = True, auto_execute_market: bool = False) -> Dict[str, Any]:
-    """Experimental Multi-Timeframe Demand & Supply strategy for XAUUSD."""
+    """Multi-Timeframe Demand & Supply + Fibonacci strategy for XAUUSD with unified risk guards."""
     try:
         from src.analysis.gold_strategy import scan_gold_setup
+        from src.risk.news_guard import is_news_blackout, is_rollover_blackout, is_spread_acceptable
         res = scan_gold_setup()
-        
-        # 1. Manage Active Open Positions (Auto Break-Even Guard)
+
+        # 1. Manage Active Open Positions first (Unified 1.0R Auto Break-Even Guard)
         if manage_positions:
             try:
                 from src.analysis.gold_position_manager import manage_gold_positions
@@ -126,7 +127,58 @@ def scan_gold_strategy(manage_limits: bool = True, manage_positions: bool = True
             except Exception as e:
                 res["position_manager"] = {"error": str(e)}
 
-        # 2. Manage Smart Pending Limit Orders
+        # 2. Auto Execute Valid Market Order if Authorized, Safe from News/Rollover/Spread, and Trigger Met
+        if auto_execute_market and "error" not in res:
+            status = res.get("status", "")
+            direction = res.get("recommended_direction", "NEUTRAL")
+            sl = res.get("recommended_sl", 0.0)
+            tp = res.get("recommended_tp", 0.0)
+            spread = float(res.get("spread", 0.20))
+            sym = res.get("mt5_symbol") or res.get("symbol", "XAUUSDc")
+
+            in_news, news_reason = is_news_blackout()
+            in_rollover, rollover_reason = is_rollover_blackout()
+            spread_ok, spread_reason = is_spread_acceptable(spread)
+
+            actionable_market_statuses = [
+                "BUY_DEMAND_ZONE",
+                "SELL_SUPPLY_ZONE",
+                "BUY_ROLE_REVERSAL_RETEST",
+                "SELL_ROLE_REVERSAL_RETEST",
+            ]
+
+            if status in actionable_market_statuses and direction in ("BUY", "SELL"):
+                if in_news or in_rollover or not spread_ok:
+                    block_reason = news_reason if in_news else (rollover_reason if in_rollover else spread_reason)
+                    res["auto_market_execution"] = {"status": "BLOCKED_BY_GUARD", "reason": block_reason}
+                else:
+                    cli = mt5_client
+                    cli.connect()
+                    open_pos = [
+                        p for p in cli.get_open_positions()
+                        if any(k in str(p.get("symbol", "")).upper() for k in ("XAU", "GOLD"))
+                    ]
+                    if len(open_pos) == 0:
+                        current_login = cli.account_info.get("login") if cli.account_info else None
+                        trade_vol = 0.06 if current_login == 160219615 else 0.01
+                        exec_comment = f"AutoGold [{status}]"
+                        order_res = cli.send_order(
+                            symbol=sym,
+                            direction=direction,
+                            volume=trade_vol,
+                            sl_price=sl,
+                            tp_price=tp,
+                            comment=exec_comment
+                        )
+                        # Cancel any leftover pending limit orders immediately to prevent double-fill
+                        if order_res.get("success"):
+                            for po in cli.get_pending_orders(sym):
+                                cli.cancel_pending_order(po["ticket"])
+                        res["auto_market_execution"] = order_res
+                    else:
+                        res["auto_market_execution"] = {"status": "SKIPPED_ALREADY_OPEN", "open_positions": len(open_pos)}
+
+        # 3. Manage Smart Pending Limit Orders (runs AFTER market check so open positions block duplicate limits)
         if manage_limits and "error" not in res:
             try:
                 from src.analysis.gold_limit_manager import manage_gold_limits
@@ -134,44 +186,6 @@ def scan_gold_strategy(manage_limits: bool = True, manage_positions: bool = True
                 res["limit_manager"] = limit_res
             except Exception as e:
                 res["limit_manager"] = {"error": str(e)}
-
-        # 3. Auto Execute Valid Market Order if Authorized and Trigger Met
-        if auto_execute_market and "error" not in res:
-            status = res.get("status", "")
-            direction = res.get("recommended_direction", "NEUTRAL")
-            entry = res.get("recommended_entry", 0.0)
-            sl = res.get("recommended_sl", 0.0)
-            tp = res.get("recommended_tp", 0.0)
-            sym = res.get("mt5_symbol") or res.get("symbol", "XAUUSDc")
-            
-            # Actionable market entry setups
-            actionable_market_statuses = [
-                "BUY_DEMAND_ZONE",
-                "SELL_SUPPLY_ZONE",
-                "BUY_ROLE_REVERSAL_RETEST",
-                "SELL_ROLE_REVERSAL_RETEST"
-            ]
-            
-            if status in actionable_market_statuses and direction in ("BUY", "SELL"):
-                # Check if we already have an open position on this symbol to prevent stacking
-                cli = mt5_client
-                cli.connect()
-                open_pos = [p for p in cli.get_open_positions() if sym in p.get("symbol", "")]
-                if len(open_pos) == 0:
-                    current_login = cli.account_info.get("login") if cli.account_info else None
-                    trade_vol = 0.06 if current_login == 160219615 else 0.01
-                    exec_comment = f"AutoGold [{status}]"
-                    order_res = cli.send_order(
-                        symbol=sym,
-                        direction=direction,
-                        volume=trade_vol,
-                        sl_price=sl,
-                        tp_price=tp,
-                        comment=exec_comment
-                    )
-                    res["auto_market_execution"] = order_res
-                else:
-                    res["auto_market_execution"] = {"status": "SKIPPED_ALREADY_OPEN", "open_positions": len(open_pos)}
 
         return res
     except ImportError as e:

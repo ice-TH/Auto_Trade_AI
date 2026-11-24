@@ -1,7 +1,7 @@
 # Antigravity Active Trading Playbook (Master Unified View)
 *Automated AI Knowledge Base - รวมศูนย์กฎความปลอดภัยกลางและคู่มือเทรดเฉพาะสินทรัพย์*
 
-- **Last Compiled:** 2026-11-24 21:35:33 (BKK UTC+7)
+- **Last Compiled:** 2026-11-25 01:47:36 (BKK UTC+7)
 - **Target Environment:** Exness MT5 (Local IPC)
 - **Architecture:** Modular Playbook (Core Safety + Asset Extensions)
 
@@ -279,6 +279,35 @@
   - **มาตรการป้องกันถาวร (Actionable Safeguards):**
     1. **Strict Waterfall/Cascade Filter:** หากราคาในแท่ง M5 ร่วงติดต่อกัน $\ge 3$ แท่ง ด้วยระยะรวม $\ge 2.5\times\text{ATR}$ ห้ามเข้า Buy ทันทีเด็ดขาด ต้องรอให้มีแท่ง Bullish M5 ปิดเต็มตัวอย่างน้อย 1 แท่งเพื่อยืนยันการหยุดไหลของโมเมนตัม
     2. **NY Overlap Liquidity Sweep Patience:** ช่วงเวลา 20:00 - 22:30 น. หากราคาทิ้งตัวลงมาทดสอบ Low กลางวัน มักจะมีการ Flush หลุด Low เดิม 5-10 USD เสมอ ให้ตั้งรับด้วย Buy Limit ลึกกว่า Low เดิม หรือรอ Reclaim ปิดยืนเหนือ Low เดิมเท่านั้น
+
+- **[XAU-RULE-25] M15 S/R Intraday Rebound & Momentum Drop Speed Guard**
+  - **1. Intraday Counter-Trend Rebound via M15 S/R:**
+    - ในวันที่ภาพใหญ่ระดับ Day เป็นขาลง ราคายังคงมีรอบเด้งรีบาวด์ (Mean Reversion) ระดับ $15 - $30 USD เสมอ
+    - อนุญาตให้นำแนวรับ M15 (`M15_SUPPORT`) มาเป็นฐานตั้งรับเปิด Buy Limit เพื่อกินรอบเด้ง โดยต้องมี Headroom ไปยังแนวต้าน M15 ถัดไป $\ge 1.5\times\text{ATR}$
+    - วาง TP ดักหน้าขอบล่างของแนวต้าน M15 (R:R 1:1.5 ถึง 1:2.0) และเมื่อบวกแตะ $+1.0\times R$ ระบบจะเลื่อน SL บังทุน (Breakeven Lock) ทันที
+  - **2. Decoupled Limit Execution (ไม่รอแท่ง 15m จบแท่ง):**
+    - การรอให้แท่ง 15m ปิดตัวมักทำให้ราคาเด้งพ้นแนวรับไปไกลจนตกรถ
+    - บอทจะใช้การวาง **Pending Buy Limit ล่วงหน้าที่ขอบบนของแนวรับ M15 (`zone_high`) หรือระดับ Fibo 65% OTE** เพื่อให้ Match ติดก้นไส้ (Wick Catch) และได้ SL แคบมาก ($3 - $5 USD)
+  - **3. Real-Time Momentum Drop Speed Guard:**
+    - ตรวจวัดอัตราเร่งของการทิ้งตัวผ่านแท่ง M5 ย้อนหลัง 3 แท่ง:
+      - **Healthy Pullback:** ราคาค่อยๆ ย่อตัวลงมา ความเร็วปกติ $\rightarrow$ **อนุญาตให้ตั้ง Buy Limit ดักรับได้ทันที**
+      - **Flash Crash / Waterfall Drop:** หากร่วงลงมา $\ge 2.5\times\text{ATR}$ หรือแท่งแดงทึบติดต่อกัน 3 แท่งรวดเดียว $\rightarrow$ **สั่งระงับการวาง หรือลบ Buy Limit ทิ้งทันที (REJECTED_FALLING_KNIFE)** ป้องกันการรับมีดตก 100%
+
+
+
+
+- **[XAU-RULE-26] Logic Audit V3 Upgrades — Directional Fibo, Edge-Anchored Multi-Bar Base, Confirmed-Bar Trigger & DST Guards (25 พ.ย. 2026)**
+  - **1. Direction-Aware Fibonacci Engine (`UP` vs `DOWN`):**
+    - สวิงขาขึ้น (`UP`: Low $\rightarrow$ High) วัดย่อลงหาโซนซื้อส่วนลด (`fibo_650 = high - 0.65 * diff`)
+    - สวิงขาลง (`DOWN`: High $\rightarrow$ Low) วัดเด้งขึ้นหาโซนขายพรีเมียม (`fibo_650 = low + 0.65 * diff`) พร้อมประเมิน `Double Confluence` แยกรายโซนจริง
+  - **2. Multi-Bar Base (1–4 แท่ง), Edge-Anchored Clamping & Zombie Zone Elimination:**
+    - ตรวจจับกลุ่มแท่งสะสมตัว Base ตั้งแต่ 1 ถึง 4 แท่งก่อนแท่งระเบิดราคา ($\ge 1.5\times \text{Avg Body}$)
+    - การบีบขนาดโซน (`clamp_zone_size`) ยึดขอบวาง SL ของจริงไว้เสมอ (Demand ยึด `zone_low` คงที่, Supply ยึด `zone_high` คงที่) และตัดโซนที่เคยถูกแท่งเทียนปิดทะลุขอบออกถาวร ไม่กลับมาฟื้นคืนชีพ (No Zombie Zones)
+  - **3. Confirmed-Bar Entry vs Live-Bar Danger Guard & Unified Role Reversal Safety:**
+    - สัญญาณยืนยันเข้า Market Order ตรวจจาก **แท่งเทียนที่ปิดสมบูรณ์แล้ว (`is_confirmed=True`)** เท่านั้น ส่วนแท่งสดที่กำลังวิ่งใช้ตรวจจับมีดตก/จรวดพุ่ง/Volatility Spike เพื่อชัก Limit หนีทันที และบังคับใช้การ์ดทุกตัวกับ `Role Reversal` เต็มรูปแบบ
+  - **4. Single-Position Guard, Spread-Aware Sell SL, Unified 1.0R Breakeven & DST News/Rollover Windows:**
+    - หากมีสถานะทองคำเปิดถืออยู่ บอทจะยกเลิก Pending Limit ที่ค้างและบล็อกการวาง Limit ใหม่ทันที
+    - คำสั่งฝั่ง `SELL` บวกค่า `live_spread` เผื่อในระยะ Moat SL ทุกครั้ง, รวมศูนย์ Auto Break-Even ที่ `+1.0R` ทั้งบน Dashboard และ `gold-loop`, และผูกเวลาข่าวสหรัฐฯ + ช่วงพักตลาด Rollover เข้ากับเวลา `America/New_York` รองรับ Daylight Saving Time อัตโนมัติตลอดปี
 
 
 ---

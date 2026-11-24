@@ -98,6 +98,12 @@ class MT5DataAdapter(BaseDataAdapter):
             elif timeframe == TimeFrame.DAY:
                 import datetime as dt
                 close_time = bar_time + dt.timedelta(days=1)
+            elif timeframe == TimeFrame.H4:
+                import datetime as dt
+                close_time = bar_time + dt.timedelta(hours=4)
+            elif timeframe == TimeFrame.H1:
+                import datetime as dt
+                close_time = bar_time + dt.timedelta(hours=1)
             elif timeframe == TimeFrame.M5:
                 import datetime as dt
                 close_time = bar_time + dt.timedelta(minutes=5)

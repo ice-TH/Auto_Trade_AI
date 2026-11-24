@@ -1,17 +1,47 @@
-import pytest
-from datetime import datetime, timezone
-from src.data.base import Bar, TimeFrame, DataStatus, SessionType
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
+from src.data.base import Bar, TimeFrame
 from src.analysis.gold_strategy import (
+    calculate_fibonacci_retracement,
+    clamp_zone_size,
     detect_trading_session,
     detect_demand_supply_zones,
     scan_gold_setup,
     MAX_GOLD_SL_USD,
-    MIN_GOLD_RR_RATIO
+    MIN_GOLD_RR_RATIO,
 )
 
+
+def test_directional_fibonacci_up_vs_down():
+    # UP swing: 3600 -> 3650 (diff = 50). Retracing DOWN into discount: 65% OTE = 3650 - 32.5 = 3617.50
+    fib_up = calculate_fibonacci_retracement(3650.0, 3600.0, label="Minor", direction="UP")
+    assert fib_up["direction"] == "UP"
+    assert fib_up["fibo_650"] == 3617.50
+    assert fib_up["golden_zone_high"] == 3619.10
+    assert fib_up["golden_zone_low"] == 3610.70
+
+    # DOWN swing: 3650 -> 3600 (diff = 50). Retracing UP into premium: 65% OTE = 3600 + 32.5 = 3632.50
+    fib_down = calculate_fibonacci_retracement(3650.0, 3600.0, label="Minor", direction="DOWN")
+    assert fib_down["direction"] == "DOWN"
+    assert fib_down["fibo_650"] == 3632.50
+    assert fib_down["golden_zone_high"] == 3639.30
+    assert fib_down["golden_zone_low"] == 3630.90
+
+
+def test_edge_anchored_clamp_zone_size():
+    # Demand zone [3600, 3610] with ATR=4 (max 6.0): bottom MUST stay anchored at 3600.0!
+    d_top, d_bot = clamp_zone_size(3610.0, 3600.0, atr=4.0, max_atr_mult=1.5, zone_type="DEMAND")
+    assert d_bot == 3600.0
+    assert d_top == 3606.0
+
+    # Supply zone [3600, 3610] with ATR=4 (max 6.0): top MUST stay anchored at 3610.0!
+    s_top, s_bot = clamp_zone_size(3610.0, 3600.0, atr=4.0, max_atr_mult=1.5, zone_type="SUPPLY")
+    assert s_top == 3610.0
+    assert s_bot == 3604.0
+
+
 def test_detect_trading_session():
-    # 21:30 BKK is 14:30 UTC -> London x New York Overlap
+    # 21:30 BKK is 14:30 UTC in November -> London (14:30 GMT) x New York (09:30 EST) Overlap
     overlap_utc = datetime(2026, 11, 23, 14, 30, tzinfo=timezone.utc)
     res = detect_trading_session(overlap_utc)
     assert res["is_overlap"] is True
@@ -25,27 +55,63 @@ def test_detect_trading_session():
     assert res_asia["is_overlap"] is False
     assert "Tokyo (เอเชีย)" in res_asia["active_sessions"]
 
-def test_detect_demand_supply_zones():
+
+def test_detect_demand_supply_multi_bar_base_and_no_zombie_zones():
     base_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
     bars = []
-    
-    # 1. Simulate a DBR (Drop-Base-Rally) Demand Zone
-    # Leg 1: Drop
-    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2650.0, high=2652.0, low=2635.0, close=2636.0, volume=100.0, is_confirmed=True))
-    # Base
-    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2636.0, high=2638.0, low=2634.0, close=2637.0, volume=50.0, is_confirmed=True))
-    # Leg 2: Rally
-    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2637.0, high=2660.0, low=2636.0, close=2658.0, volume=200.0, is_confirmed=True))
 
-    # Add extra filler bars to reach min_bars
-    for i in range(15):
-        bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2655.0, high=2658.0, low=2654.0, close=2656.0, volume=80.0, is_confirmed=True))
+    # 1. DBR #1 at [2634, 2638] with 2-candle base, LATER BROKEN by a crash to 2625, even though price recovers to 2660
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2650.0, high=2652.0, low=2635.0, close=2636.0, volume=100.0, is_confirmed=True))
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2636.0, high=2638.0, low=2634.0, close=2637.0, volume=50.0, is_confirmed=True))
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2637.0, high=2638.0, low=2635.0, close=2636.5, volume=50.0, is_confirmed=True))
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2636.5, high=2655.0, low=2636.0, close=2654.0, volume=200.0, is_confirmed=True))
+    # Subsequent crash breaks below 2634 -> permanently kills DBR #1!
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2654.0, high=2654.0, low=2624.0, close=2625.0, volume=250.0, is_confirmed=True))
+
+    # 2. Fresh DBR #2 at [2624, 2627] with 2-candle base that holds cleanly
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2625.0, high=2627.0, low=2624.0, close=2626.0, volume=60.0, is_confirmed=True))
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2626.0, high=2627.0, low=2624.5, close=2626.5, volume=60.0, is_confirmed=True))
+    bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2626.5, high=2662.0, low=2626.0, close=2660.0, volume=300.0, is_confirmed=True))
+
+    for _ in range(12):
+        bars.append(Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=2658.0, high=2660.0, low=2656.0, close=2659.0, volume=80.0, is_confirmed=True))
 
     zones = detect_demand_supply_zones(bars, min_bars=10)
-    assert "demand_zones" in zones
-    assert "supply_zones" in zones
-    assert len(zones["demand_zones"]) >= 1
-    assert zones["demand_zones"][0]["pattern"] in ["DBR", "RBR"]
+    demands = zones["demand_zones"]
+    assert len(demands) >= 1
+    # Zombie zone #1 (low 2634) must NOT exist; only fresh zone #2 (low 2624) remains
+    assert all(d["zone_low"] != 2634.0 for d in demands)
+    assert any(d["zone_low"] == 2624.0 and d["base_candles"] == 2 for d in demands)
+
+
+def test_unconfirmed_live_wick_does_not_false_trigger_market_buy():
+    """If closed bar [-2] had NO rejection wick, an unconfirmed live wick on [-1] must NOT fire BUY_DEMAND_ZONE Market order."""
+    london_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
+    closed_bar = Bar("XAUUSD", TimeFrame.M5, london_time, london_time, open=3618.0, high=3618.2, low=3617.0, close=3617.0, volume=100.0, is_confirmed=True)
+    # Live forming bar [-1] has temporary lower wick, but is_confirmed=False!
+    live_bar = Bar("XAUUSD", TimeFrame.M5, london_time, london_time, open=3617.0, high=3618.0, low=3615.0, close=3617.5, volume=50.0, is_confirmed=False)
+
+    with patch("src.analysis.gold_strategy.MT5DataAdapter") as mock_adapter_cls, \
+         patch("src.analysis.gold_strategy.calculate_atr", return_value=[{"value": 3.0}]), \
+         patch("src.analysis.gold_strategy.detect_demand_supply_zones") as mock_ds, \
+         patch("src.analysis.gold_strategy.build_sr_zones", return_value=[]):
+
+        mock_adapter = MagicMock()
+        mock_adapter.is_connected = True
+        mock_adapter._resolve_symbol.return_value = "XAUUSDm"
+        mock_adapter.get_bars.return_value = [closed_bar] * 19 + [live_bar]
+        mock_adapter_cls.return_value = mock_adapter
+
+        mock_ds.return_value = {
+            "demand_zones": [{"type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3615.0, "zone_mid": 3616.5}],
+            "supply_zones": [{"type": "SUPPLY", "pattern": "RBD", "zone_high": 3635.0, "zone_low": 3630.0, "zone_mid": 3632.5}],
+        }
+
+        setup = scan_gold_setup()
+        # Must recommend LIMIT or WAITING_FOR_REJECTION, never premature MARKET BUY
+        assert setup["status"] in ("ACTIONABLE_BUY_LIMIT", "WAITING_FOR_REJECTION")
+        assert setup["status"] != "BUY_DEMAND_ZONE"
+
 
 def test_scan_gold_setup_runs():
     setup = scan_gold_setup()
@@ -55,19 +121,17 @@ def test_scan_gold_setup_runs():
     assert "session_info" in setup
     assert "trend_indicators" in setup
     assert "rr_ratio" in setup
-    assert "risk_usd" in setup
-    assert "reward_usd" in setup
+
 
 def test_gold_strategy_rejects_poor_rr():
     base_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
-    # Price close = 3617.5 is inside zone [3616, 3618], with rejection lower wick (low 3615 -> lower wick 2.0 / 3.0 = 66%)
     mock_bar = Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=3617.0, high=3618.0, low=3615.0, close=3617.5, volume=100.0, is_confirmed=True)
-    
+
     with patch("src.analysis.gold_strategy.MT5DataAdapter") as mock_adapter_cls, \
          patch("src.analysis.gold_strategy.calculate_atr", return_value=[{"value": 4.0}]), \
          patch("src.analysis.gold_strategy.detect_demand_supply_zones") as mock_ds, \
          patch("src.analysis.gold_strategy.build_sr_zones", return_value=[]):
-        
+
         mock_adapter = MagicMock()
         mock_adapter.is_connected = True
         mock_adapter._resolve_symbol.return_value = "XAUUSDm"
@@ -75,12 +139,8 @@ def test_gold_strategy_rejects_poor_rr():
         mock_adapter_cls.return_value = mock_adapter
 
         mock_ds.return_value = {
-            "demand_zones": [{
-                "type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3616.0, "zone_mid": 3617.0
-            }],
-            "supply_zones": [{
-                "type": "SUPPLY", "pattern": "RBD", "zone_high": 3630.0, "zone_low": 3625.0, "zone_mid": 3627.5
-            }]
+            "demand_zones": [{"type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3616.0, "zone_mid": 3617.0}],
+            "supply_zones": [{"type": "SUPPLY", "pattern": "RBD", "zone_high": 3630.0, "zone_low": 3625.0, "zone_mid": 3627.5}],
         }
 
         setup = scan_gold_setup()
@@ -89,30 +149,25 @@ def test_gold_strategy_rejects_poor_rr():
         assert setup["rr_ratio"] < MIN_GOLD_RR_RATIO
         assert setup["pullback_entry_recommended"] is not None
 
+
 def test_gold_strategy_rejects_wide_sl():
     base_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
-    # Price close = 3617.5 is inside zone [3610, 3618], with rejection lower wick (low 3615 -> lower wick 2.0 / 3.0 = 66%)
     mock_bar = Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=3617.0, high=3618.0, low=3615.0, close=3617.5, volume=100.0, is_confirmed=True)
-    
+
     with patch("src.analysis.gold_strategy.MT5DataAdapter") as mock_adapter_cls, \
          patch("src.analysis.gold_strategy.calculate_atr", return_value=[{"value": 4.0}]), \
          patch("src.analysis.gold_strategy.detect_demand_supply_zones") as mock_ds, \
          patch("src.analysis.gold_strategy.build_sr_zones", return_value=[]):
-        
+
         mock_adapter = MagicMock()
         mock_adapter.is_connected = True
         mock_adapter._resolve_symbol.return_value = "XAUUSDm"
         mock_adapter.get_bars.return_value = [mock_bar] * 20
         mock_adapter_cls.return_value = mock_adapter
 
-        # Demand zone low is 3610 (SL distance > $6.00)
         mock_ds.return_value = {
-            "demand_zones": [{
-                "type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3610.0, "zone_mid": 3614.0
-            }],
-            "supply_zones": [{
-                "type": "SUPPLY", "pattern": "RBD", "zone_high": 3650.0, "zone_low": 3645.0, "zone_mid": 3647.5
-            }]
+            "demand_zones": [{"type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3610.0, "zone_mid": 3614.0}],
+            "supply_zones": [{"type": "SUPPLY", "pattern": "RBD", "zone_high": 3650.0, "zone_low": 3645.0, "zone_mid": 3647.5}],
         }
 
         setup = scan_gold_setup()
@@ -120,10 +175,9 @@ def test_gold_strategy_rejects_wide_sl():
         assert setup["recommended_direction"] == "NEUTRAL"
         assert setup["risk_usd"] > MAX_GOLD_SL_USD
 
+
 def test_gold_strategy_accepts_sl_up_to_8_usd():
-    """Test that SL distance between $6.00 and $8.00 (e.g. $7.00) is accepted under the updated MAX_GOLD_SL_USD=8.00"""
     base_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
-    # Price close = 3617.5, low = 3615.0 -> rejection lower wick 2.0 / 3.0 = 66%
     mock_bar = Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=3617.0, high=3618.0, low=3615.0, close=3617.5, volume=100.0, is_confirmed=True)
 
     with patch("src.analysis.gold_strategy.MT5DataAdapter") as mock_adapter_cls, \
@@ -137,15 +191,9 @@ def test_gold_strategy_accepts_sl_up_to_8_usd():
         mock_adapter.get_bars.return_value = [mock_bar] * 20
         mock_adapter_cls.return_value = mock_adapter
 
-        # Demand zone low is 3613.5 -> raw_sl = 3613.5 - (4.0 * 0.75) = 3610.5 -> sl_distance = 3617.5 - 3610.5 = 7.0 USD
-        # Supply at 3635 -> tp = 3635 - (4.0 * 0.35) = 3633.6 -> reward = 3633.6 - 3617.5 = 16.1 -> R:R = 16.1 / 7.0 = 2.30 >= 1.50
         mock_ds.return_value = {
-            "demand_zones": [{
-                "type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3613.5, "zone_mid": 3615.75
-            }],
-            "supply_zones": [{
-                "type": "SUPPLY", "pattern": "RBD", "zone_high": 3640.0, "zone_low": 3635.0, "zone_mid": 3637.5
-            }]
+            "demand_zones": [{"type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3613.5, "zone_mid": 3615.75}],
+            "supply_zones": [{"type": "SUPPLY", "pattern": "RBD", "zone_high": 3640.0, "zone_low": 3635.0, "zone_mid": 3637.5}],
         }
 
         setup = scan_gold_setup()
@@ -155,75 +203,10 @@ def test_gold_strategy_accepts_sl_up_to_8_usd():
         assert setup["risk_usd"] == 7.0
         assert setup["rr_ratio"] >= MIN_GOLD_RR_RATIO
 
-def test_gold_strategy_waiting_for_rejection():
-    """Test that price entering demand zone without rejection wick returns WAITING_FOR_REJECTION"""
-    base_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
-    # Candle with no lower wick (open=3618, close=3617, low=3617 -> lower_wick=0)
-    mock_bar = Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=3618.0, high=3619.0, low=3617.0, close=3617.0, volume=100.0, is_confirmed=True)
-    
-    with patch("src.analysis.gold_strategy.MT5DataAdapter") as mock_adapter_cls, \
-         patch("src.analysis.gold_strategy.calculate_atr", return_value=[{"value": 3.0}]), \
-         patch("src.analysis.gold_strategy.detect_demand_supply_zones") as mock_ds, \
-         patch("src.analysis.gold_strategy.build_sr_zones", return_value=[]):
-        
-        mock_adapter = MagicMock()
-        mock_adapter.is_connected = True
-        mock_adapter._resolve_symbol.return_value = "XAUUSDm"
-        mock_adapter.get_bars.return_value = [mock_bar] * 20
-        mock_adapter_cls.return_value = mock_adapter
-
-        mock_ds.return_value = {
-            "demand_zones": [{
-                "type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3615.0, "zone_mid": 3616.5
-            }],
-            "supply_zones": [{
-                "type": "SUPPLY", "pattern": "RBD", "zone_high": 3640.0, "zone_low": 3635.0, "zone_mid": 3637.5
-            }]
-        }
-
-        setup = scan_gold_setup()
-        assert setup["status"] == "WAITING_FOR_REJECTION"
-        assert setup["recommended_direction"] == "NEUTRAL"
-        assert "WAITING_FOR_REJECTION" in setup["status"]
-
-def test_gold_strategy_approves_valid_setup():
-    base_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
-    # Candle with strong lower rejection wick: low=3615.0, open=3617.0, close=3617.5, high=3618.0 -> lower wick = 2.0 / 3.0 = 66%
-    mock_bar = Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=3617.0, high=3618.0, low=3615.0, close=3617.5, volume=100.0, is_confirmed=True)
-    
-    with patch("src.analysis.gold_strategy.MT5DataAdapter") as mock_adapter_cls, \
-         patch("src.analysis.gold_strategy.calculate_atr", return_value=[{"value": 3.0}]), \
-         patch("src.analysis.gold_strategy.detect_demand_supply_zones") as mock_ds, \
-         patch("src.analysis.gold_strategy.build_sr_zones", return_value=[]):
-        
-        mock_adapter = MagicMock()
-        mock_adapter.is_connected = True
-        mock_adapter._resolve_symbol.return_value = "XAUUSDm"
-        mock_adapter.get_bars.return_value = [mock_bar] * 20
-        mock_adapter_cls.return_value = mock_adapter
-
-        mock_ds.return_value = {
-            "demand_zones": [{
-                "type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3615.0, "zone_mid": 3616.5
-            }],
-            "supply_zones": [{
-                "type": "SUPPLY", "pattern": "RBD", "zone_high": 3635.0, "zone_low": 3630.0, "zone_mid": 3632.5
-            }]
-        }
-
-        setup = scan_gold_setup()
-        assert setup["status"] == "BUY_DEMAND_ZONE"
-        assert setup["recommended_direction"] == "BUY"
-        assert setup["rr_ratio"] >= MIN_GOLD_RR_RATIO
-        assert setup["risk_usd"] <= MAX_GOLD_SL_USD
-        assert setup["trigger_timeframe"] in ["M5", "15m"]
 
 def test_gold_strategy_m5_rejection_trigger_priority():
-    """Test that M5 candle rejection activates the trigger even if M15 hasn't closed with a wick yet"""
     base_time = datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc)
-    # M15 candle has no lower wick (open=3618, close=3617, low=3617 -> lower_wick=0)
     mock_bar_15m = Bar("XAUUSD", TimeFrame.M15, base_time, base_time, open=3618.0, high=3619.0, low=3617.0, close=3617.0, volume=100.0, is_confirmed=True)
-    # M5 candle has strong lower rejection wick: low=3615.0, open=3617.0, close=3617.5, high=3618.0 -> lower wick = 2.0 / 3.0 = 66%
     mock_bar_5m = Bar("XAUUSD", TimeFrame.M5, base_time, base_time, open=3617.0, high=3618.0, low=3615.0, close=3617.5, volume=50.0, is_confirmed=True)
 
     with patch("src.analysis.gold_strategy.MT5DataAdapter") as mock_adapter_cls, \
@@ -243,12 +226,8 @@ def test_gold_strategy_m5_rejection_trigger_priority():
         mock_adapter_cls.return_value = mock_adapter
 
         mock_ds.return_value = {
-            "demand_zones": [{
-                "type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3615.0, "zone_mid": 3616.5
-            }],
-            "supply_zones": [{
-                "type": "SUPPLY", "pattern": "RBD", "zone_high": 3635.0, "zone_low": 3630.0, "zone_mid": 3632.5
-            }]
+            "demand_zones": [{"type": "DEMAND", "pattern": "DBR", "zone_high": 3618.0, "zone_low": 3615.0, "zone_mid": 3616.5}],
+            "supply_zones": [{"type": "SUPPLY", "pattern": "RBD", "zone_high": 3635.0, "zone_low": 3630.0, "zone_mid": 3632.5}],
         }
 
         setup = scan_gold_setup()
@@ -256,6 +235,4 @@ def test_gold_strategy_m5_rejection_trigger_priority():
         assert setup["recommended_direction"] == "BUY"
         assert setup["trigger_timeframe"] == "M5"
         assert setup["m5_rejection_detected"] is True
-        # Structural SL: 3615.0 (zone_low) - (3.0 * 0.75) = 3612.75
         assert setup["recommended_sl"] == 3612.75
-

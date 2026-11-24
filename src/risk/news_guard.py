@@ -1,5 +1,5 @@
-from datetime import datetime, time, timezone, timedelta
-from typing import Tuple, Dict, Any, Optional
+from datetime import datetime, time, timezone
+from typing import Tuple, Optional
 from zoneinfo import ZoneInfo
 import logging
 
@@ -9,16 +9,21 @@ TZ_UTC = timezone.utc
 TZ_BANGKOK = ZoneInfo("Asia/Bangkok")
 TZ_EASTERN = ZoneInfo("America/New_York")
 
-# Standard High-Impact US Macro News Release Times (in Bangkok Time UTC+7)
-# 1. 19:30 - 20:30 BKK: CPI, PPI, Non-Farm Payrolls, GDP, Retail Sales, Unemployment Claims
-# 2. 21:00 - 22:00 BKK: ISM Manufacturing/Services, Consumer Sentiment, New Home Sales
-# 3. 01:00 - 02:30 BKK: FOMC Interest Rate Decision, Fed Chair Powell Press Conference
-HIGH_IMPACT_NEWS_WINDOWS_BKK = [
-    # (start_time, end_time, description)
-    (time(19, 15), time(20, 45), "US Morning Data / CPI / NFP / PPI"),
-    (time(20, 45), time(22, 15), "ISM / PMI / Consumer Confidence"),
-    (time(0, 45), time(2, 30), "FOMC Rate Decision / Fed Statements"),
+# DST-Aware High-Impact US Macro News Release Windows (anchored to America/New_York ET)
+# Automatically shifts between Summer (EDT, UTC-4) and Winter (EST, UTC-5) without manual edits:
+# 1. 08:15 - 09:45 ET (19:15-20:45 BKK Summer / 20:15-21:45 BKK Winter): CPI, PPI, NFP, GDP, Retail Sales, Jobless Claims (08:30 ET)
+# 2. 09:45 - 11:15 ET (20:45-22:15 BKK Summer / 21:45-23:15 BKK Winter): ISM PMI, JOLTS, Consumer Confidence (10:00 ET)
+# 3. 13:45 - 15:30 ET (00:45-02:30 BKK Summer / 01:45-03:30 BKK Winter): FOMC Rate Decision & Fed Chair Press Conference (14:00-14:30 ET)
+HIGH_IMPACT_NEWS_WINDOWS_ET = [
+    (time(8, 15), time(9, 45), "US Morning Data / CPI / NFP / PPI (08:30 ET)"),
+    (time(9, 45), time(11, 15), "ISM / PMI / Consumer Confidence (10:00 ET)"),
+    (time(13, 45), time(15, 30), "FOMC Rate Decision / Fed Statements (14:00 ET)"),
 ]
+
+# Gold Daily Rollover / Illiquid Close Window in New York Time:
+# CME/CFD Gold daily break occurs 17:00 - 18:00 ET. Spreads widen sharply 30m before and 15m after.
+GOLD_ROLLOVER_WINDOW_ET = (time(16, 30), time(18, 15))
+
 
 def to_bangkok(dt: datetime) -> datetime:
     """Convert any aware or naive datetime to Asia/Bangkok time (UTC+7)."""
@@ -26,31 +31,76 @@ def to_bangkok(dt: datetime) -> datetime:
         dt = dt.replace(tzinfo=TZ_UTC)
     return dt.astimezone(TZ_BANGKOK)
 
+
+def to_eastern(dt: datetime) -> datetime:
+    """Convert any aware or naive datetime to America/New_York time (EDT/EST)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=TZ_UTC)
+    return dt.astimezone(TZ_EASTERN)
+
+
+def is_rollover_blackout(dt: Optional[datetime] = None) -> Tuple[bool, str]:
+    """
+    Check if current time falls inside the daily Gold rollover / session close maintenance window
+    (16:30 - 18:15 ET -> 03:30 - 05:15 BKK in EDT / 04:30 - 06:15 BKK in EST).
+    Prevents overnight spread traps and new entries right before market close [XAU-RULE-09].
+    """
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+
+    dt_et = to_eastern(dt)
+    dt_bkk = to_bangkok(dt)
+
+    # Weekend check in NY time (Friday >= 16:30 ET through Sunday < 18:15 ET)
+    wd = dt_et.weekday()  # Mon=0 ... Fri=4, Sat=5, Sun=6
+    curr_t = dt_et.time()
+    start_t, end_t = GOLD_ROLLOVER_WINDOW_ET
+
+    if wd == 5 or (wd == 4 and curr_t >= start_t) or (wd == 6 and curr_t <= end_t):
+        return True, f"⚠️ MARKET CLOSED / WEEKEND ROLLOVER ({dt_bkk.strftime('%H:%M')} BKK): ตลาดทองคำปิดทำการสุดสัปดาห์/ช่วงเปิดตลาดเช้าวันจันทร์"
+
+    if start_t <= curr_t <= end_t:
+        return True, (
+            f"⚠️ ROLLOVER BLACKOUT ({dt_bkk.strftime('%H:%M')} BKK / {dt_et.strftime('%H:%M')} ET): "
+            f"ช่วงพักเซสชัน/ข้ามวันของทองคำ สเปรดถ่างสูง งดเปิดหรือค้างคำสั่ง Limit [XAU-RULE-09]"
+        )
+
+    return False, "ไม่อยู่ในช่วงพักตลาด Rollover"
+
+
 def is_news_blackout(dt: Optional[datetime] = None) -> Tuple[bool, str]:
     """
-    Check if the given time falls inside a high-impact US macro news blackout window.
+    Check if the given time falls inside a DST-aware high-impact US macro news blackout window.
     During news blackout windows, all Pending Orders must be cancelled and no new limits placed.
     """
     if dt is None:
         dt = datetime.now(timezone.utc)
-    
+
+    dt_et = to_eastern(dt)
     dt_bkk = to_bangkok(dt)
-    # Check weekday (Monday=0 to Friday=4). Markets closed or quiet on weekends
-    if dt_bkk.weekday() >= 5:
+
+    # US macro releases occur Monday (0) through Friday (4) in New York time
+    if dt_et.weekday() >= 5:
         return False, "Weekend: Regular market closed"
 
-    current_t = dt_bkk.time()
+    current_et = dt_et.time()
 
-    for start_t, end_t, desc in HIGH_IMPACT_NEWS_WINDOWS_BKK:
+    for start_t, end_t, desc in HIGH_IMPACT_NEWS_WINDOWS_ET:
         if start_t <= end_t:
-            if start_t <= current_t <= end_t:
-                return True, f"⚠️ NEWS BLACKOUT: อยู่ในช่วงข่าวแรงสหรัฐฯ ({desc}) ห้ามวาง Limit Order [XAU-RULE-17]"
+            if start_t <= current_et <= end_t:
+                return True, (
+                    f"⚠️ NEWS BLACKOUT ({dt_bkk.strftime('%H:%M')} BKK / {dt_et.strftime('%H:%M')} ET): "
+                    f"อยู่ในช่วงข่าวแรงสหรัฐฯ ({desc}) ห้ามวางคำสั่งใหม่ [XAU-RULE-17]"
+                )
         else:
-            # Over midnight window (e.g. 23:45 to 02:30)
-            if current_t >= start_t or current_t <= end_t:
-                return True, f"⚠️ NEWS BLACKOUT: อยู่ในช่วงข่าวแรงสหรัฐฯ ({desc}) ห้ามวาง Limit Order [XAU-RULE-17]"
+            if current_et >= start_t or current_et <= end_t:
+                return True, (
+                    f"⚠️ NEWS BLACKOUT ({dt_bkk.strftime('%H:%M')} BKK / {dt_et.strftime('%H:%M')} ET): "
+                    f"อยู่ในช่วงข่าวแรงสหรัฐฯ ({desc}) ห้ามวางคำสั่งใหม่ [XAU-RULE-17]"
+                )
 
     return False, "สภาวะเวลาปกติ: ปลอดภัยจากหน้าต่างข่าวแรงตามตาราง"
+
 
 def is_spread_acceptable(spread: float, max_allowed_spread: float = 0.40) -> Tuple[bool, str]:
     """
@@ -61,8 +111,9 @@ def is_spread_acceptable(spread: float, max_allowed_spread: float = 0.40) -> Tup
     if spread <= 0:
         return True, "Spread is nominal (<= 0 or unavailable)"
     if spread > max_allowed_spread:
-        return False, f"⚠️ SPREAD EXPANDED: สเปรดทองคำถ่างเกินเกณฑ์ (${spread:.2f} > ${max_allowed_spread:.2f}) ห้ามตั้ง Limit ป้องกัน Slippage"
+        return False, f"⚠️ SPREAD EXPANDED: สเปรดทองคำถ่างเกินเกณฑ์ (${spread:.2f} > ${max_allowed_spread:.2f}) ห้ามตั้งคำสั่ง ป้องกัน Slippage"
     return True, f"สเปรดปกติ (${spread:.2f} <= ${max_allowed_spread:.2f})"
+
 
 def is_volatility_spike(current_bar_range: float, current_atr: float, spike_multiplier: float = 1.8) -> Tuple[bool, str]:
     """

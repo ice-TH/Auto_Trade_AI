@@ -240,6 +240,10 @@ def get_zones(symbol: str, db: Session = Depends(get_db)):
     # Get DAY bars for core S/R (500 bars ~ 2 years for deep historical levels)
     day_bars = data_adapter.get_bars(symbol, TimeFrame.DAY, limit=500)
     auto_zones = build_sr_zones(symbol, day_bars, n_fractal=3, atr_multiplier=0.5)
+
+    # Get M15 bars for intraday S/R (200 bars ~ 2 days, n_fractal=4 to filter chop)
+    m15_bars = data_adapter.get_bars(symbol, TimeFrame.M15, limit=200)
+    m15_zones = build_sr_zones(symbol, m15_bars, n_fractal=4, atr_multiplier=0.4)
     
     # Get manual zones from DB
     manual_records = db.query(ManualZoneModel).filter(ManualZoneModel.symbol == symbol).all()
@@ -266,6 +270,7 @@ def get_zones(symbol: str, db: Session = Depends(get_db)):
     return {
         "symbol": symbol,
         "auto_sr_zones": [z.to_dict() for z in auto_zones],
+        "m15_sr_zones": [z.to_dict() for z in m15_zones],
         "manual_zones": manual_zones,
         "fibonacci": fib_data,
         "demand_supply": ds_zones,
