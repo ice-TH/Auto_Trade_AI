@@ -1,0 +1,43 @@
+# Environment & API Secrets
+.env
+.env*.local
+*.pem
+*.key
+*.p8
+*.pkcs8
+
+# Database & Runtime Data
+data_store/*.db
+data_store/*.sqlite
+data_store/*.sqlite3
+
+# Python Caches & Compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Visual captures & Runtime logs (Large files & Private screen data)
+screenshots/
+images/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.gemini/
+.impeccable/
+
+# Learning files & Copyrighted materials
+ไฟล์ไว้เรียนรู้/
+ตัวอย่างเว็บ/

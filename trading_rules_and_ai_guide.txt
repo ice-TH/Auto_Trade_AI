@@ -1,0 +1,184 @@
+================================================================================
+คู่มือและกฎเกณฑ์การวิเคราะห์การเทรดของระบบ AutoTrade & Antigravity AI
+(AutoTrade Trading Rules & AI Analysis Playbook)
+================================================================================
+
+[บันทึกสถานะบัญชี]
+- บัญชีที่ได้รับอนุญาตในระบบ:
+  1. บัญชี Exness Demo: 434552387 (Server: Exness-MT5Trial7) สำหรับทดสอบระบบ, โหมด BTCUSD 1m Scalper, และโหมดกลยุทธ์ทองคำ XAUUSDm
+  2. บัญชี Exness Real Cent: 160219615 (Server: Exness-MT5Real20) เฉพาะคู่เงินทองคำเซนต์ XAUUSDc (Contract Size = 1.0, Fixed 0.06 Lot)
+- ระบบมี Whitelist Guard ป้องกันการส่งคำสั่งผิดบัญชีหรือผิดสัญลักษณ์โดยเด็ดขาด
+
+เอกสารนี้รวบรวม "ตรรกะ กฎเกณฑ์ และขั้นตอนการวิเคราะห์" ทั้งหมดที่ Antigravity AI 
+และระบบ AutoTrade ใช้ตรวจสอบข้อมูลตลาดก่อนจะสรุปแผนและส่งคำสั่งซื้อขายเข้า MT5
+แบ่งออกเป็น 4 หมวดหลัก:
+1. ระบบหลัก: Swing Trading หุ้นสหรัฐฯ 7 ตัว (DAY / M15 / WEEK)
+2. โหมดซิ่งเสริม: Fast Scalping BTCUSD (1m Demand/Supply & Trendline)
+3. โหมดกลยุทธ์ทองคำ: XAU/USD Price Action Multi-TF Demand & Supply (H1 / M15 / M5)
+4. ขั้นตอนการทำงานและการสั่งงาน AI (AI Runtime Workflow & CLI Bridge)
+
+================================================================================
+ส่วนที่ 1: กฎการเทรดหุ้นสหรัฐฯ 7 ตัว (Core US Equities Rules)
+(AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA)
+================================================================================
+
+1. การประสานงาน 3 กรอบเวลา (Multi-Timeframe Alignment)
+   - กรอบ WEEK (1W): ดูภาพใหญ่ระดับมหภาค (Macro Trend)
+     * Bullish: ราคาอยู่เหนือเส้น EMA 50-Week -> อนุญาตให้พิจารณาฝั่ง BUY ได้เต็มที่
+     * Bearish/Cautious: ราคาอยู่ใต้เส้น EMA 50-Week -> เพิ่มความระมัดระวัง
+   - กรอบ DAY (1D): กรอบเวลาหลักในการสร้างโครงสร้างราคา (Primary Structure)
+     * ค้นหาโซนแนวรับ/แนวต้าน (Support & Resistance)
+   - กรอบ M15 (15m): จังหวะเข้าทำ (Trigger Timeframe)
+     * รอยืนยันการเด้งตัวและแท่งเทียนกลับตัว (Reversal Candle) ในโซนแนวรับ
+
+2. กฎการหาแนวรับ-แนวต้าน: Zero Look-Ahead Pivot Fractal (N=3)
+   - นิยาม Swing High / Swing Low:
+     * ต้องมีแท่งเทียนซ้ายมือ 3 แท่ง และขวามือ 3 แท่ง ที่ราคาไม่ทำจุดสูงสุด/ต่ำสุดใหม่
+     * สัญญาณจะยืนยันเมื่อแท่งที่ N+1 (แท่งที่ 4 ฝั่งขวา) ปิดตัวลงเท่านั้น
+   - การรวมเป็นโซน (Zone Clustering):
+     * หากระดับราคาอยู่ใกล้กันไม่เกิน 0.5x ATR(14) ระบบจะรวมเข้าเป็นโซนเดียวกัน
+   - คุณสมบัติของโซน:
+     * Touch Count: นับจำนวนครั้งที่ราคาลงมาทดสอบ
+     * Freshness: โซนสดใหม่ (FRESH), ผ่านการทดสอบ (TESTED), หรือเก่า/อ่อนแรง (AGED)
+     * Role Reversal: แนวต้านเดิมที่ถูกทะลุแล้วเปลี่ยนมาทำหน้าที่เป็นแนวรับ
+
+3. กฎเหล็ก: Headroom Guard (ห้ามซื้อติดแนวต้านเด็ดขาด)
+   - กฎนี้ถูกตั้งขึ้นเพื่อป้องกันปัญหา "ซื้อปุ๊บ ชนแนวต้านปั๊บ แล้วร่วงทันที"
+   - วิธีคำนวณ:
+     Headroom = (ราคาแนวต้านสำคัญถัดไป - ราคาที่จะเข้าซื้อ)
+     Headroom Ratio = Headroom / ATR(14)
+   - เงื่อนไขตัดสิน:
+     * หาก Headroom Ratio < 1.0x ATR:
+       -> "ปฏิเสธการเข้าเทรดทันที" (REJECTED_NO_TRADE)
+       -> บันทึกเหตุผลลงใน Non-Entry Reasons Journal บนแดชบอร์ด
+     * หาก Headroom Ratio >= 1.0x ATR:
+       -> ผ่านเกณฑ์ พื้นที่ด้านบนเปิดโล่ง สามารถวางเป้ากำไรได้
+
+4. การบริหารเงินทุนและขนาดคำสั่ง (Money Management & 1:5 Leverage Cap)
+   - เงินทุนตั้งต้น (Base Capital): 3,000 บาท (~$85 USD)
+   - ความเสี่ยงต่อไม้ (Risk per Trade): 2.0% ของทุน (~60 บาท หรือ ~$1.70 USD)
+   - อัตราผลตอบแทนต่อความเสี่ยง (Risk/Reward Ratio): ต้องคุ้มค่าตั้งแต่ 1 : 1.5 ขึ้นไป
+   - เพดาน Leverage: ห้ามเกิน 1:5 เด็ดขาด (Notional Position Value รวมต้องไม่เกิน 15,000 บาท)
+   - การคำนวณ Lot Size:
+     * Contract Size หุ้น CFD ของ Exness คือ 1.0 Lot = 100 หุ้น (0.01 Lot = 1 หุ้น)
+     * คำนวณจากระยะทาง SL และผลขาดทุนสูงสุดที่ยอมรับได้
+     * หากขนาดต่ำสุด (0.01 Lot) ยังเสี่ยงเกินเกณฑ์ -> "ไม่เข้าเทรด (NO TRADE)"
+
+5. กฎความปลอดภัยของคำสั่ง MT5
+   - Mandatory Hard Stop Loss: ห้ามส่งออเดอร์โดยไม่มี Stop Loss ฝั่งโบรกเกอร์เด็ดขาด
+   - Idempotency Guard: ป้องกันการส่งคำสั่งซ้ำซ้อนในแท่งเทียนหรือชั่วโมงเดียวกัน
+   - Two-Step Confirmation: ต้องสรุปข้อมูล Entry, SL, TP, Margin ให้ผู้ใช้ยืนยันก่อนส่งคำสั่ง
+
+================================================================================
+ส่วนที่ 2: โหมดซิ่งเสริม BTCUSD 1m Fast Scalper (Experimental)
+================================================================================
+
+ออกแบบตามตรรกะ Price Action สำหรับการเทรดความเร็วสูงในกรอบเวลา 1 นาที (1m):
+
+1. การตรวจจับโซน Demand & Supply (Price Imbalances)
+   - Demand Zone (Drop-Base-Rally):
+     * ค้นหาแท่งทิ้งตัว (Drop) ตามด้วยแท่งพักฐาน (Base) และแท่งดีดตัวรุนแรง (Rally)
+     * ความแรงของแท่งดีดตัวต้องมีขนาดเนื้อเทียน (Body) > 1.2x ATR(14) บนแท่ง 1m
+   - Supply Zone (Rally-Base-Drop):
+     * ฐานราคาก่อนที่ราคาจะทุบตัวลงรุนแรง ทำหน้าที่เป็นแนวต้านซัพพลายด้านบน
+
+2. การตรวจจับเส้นแนวรับ/ต้าน และเส้นเทรนด์ไลน์ (S/R & Ascending Trendline)
+   - Key Overhead Resistance: ยอด High เดิมที่ราคายังไม่ผ่าน
+   - Ascending Trendline (Higher Lows): ลากเชื่อมจุด Swing Low ที่ยกตัวสูงขึ้น
+
+3. การยืนยันด้วย RSI(14) และ Moving Average (EMA 20)
+   - RSI(14) บน 1m > 45.0-50.0 และราคาเริ่มยกตัวกลับขึ้นมายืนเหนือ EMA 20
+
+4. โครงสร้างคำสั่งซิ่ง (Scalping Execution Setup)
+   - Entry Price: เข้าซื้อเมื่อราคาลงมาทดสอบขอบบนของกล่อง Demand หรือแตะเส้น Trendline ขาขึ้น
+   - Stop Loss (Hard SL): วางใต้ขอบล่างของ Demand Box เล็กน้อย (+ Buffer 0.5x ATR)
+   - Take Profit (TP Target): วางที่เส้น Key Overhead Resistance ด้านบน
+   - Risk/Reward Ratio: ได้สัดส่วนกำไรต่อความเสี่ยงสูง (ตั้งแต่ 1 : 2.5 ถึง 1 : 4+)
+   - ขนาดคำสั่ง: 0.01 Lot คงที่
+
+================================================================================
+ส่วนที่ 3: โหมดกลยุทธ์ทองคำ XAU/USD (Gold Price Action & Multi-Swing Fibonacci)
+================================================================================
+
+สเปกสัญญา: 
+- Demo (`XAUUSDm`): 1.00 Lot = 100 Troy Oz (0.01 Lot = 1 Oz)
+- Real Cent (`XAUUSDc`): 1.00 Lot = 1 Troy Oz (0.01 Lot = 0.01 Oz | ล็อก Volume ที่ 0.06 Lot)
+
+1. โครงสร้าง Demand & Supply Zones จาก Base สะสมจริง (ห้ามใช้ Order Block / OB เด็ดขาด)
+   - Demand Base: DBR (Drop-Base-Rally) หรือ RBR (Rally-Base-Rally)
+   - Supply Base: RBD (Rally-Base-Drop) หรือ DBD (Drop-Base-Drop)
+   - **กฎการวัดกรอบ Base:** วัดเฉพาะ High-Low ของกลุ่มแท่ง Base จริงก่อนเกิดแท่ง Big Momentum
+   - **Dynamic Clamping:** ล็อกความกว้างของกล่องโซนสูงสุดไม่เกิน 1.5x ATR (`clamp_zone_size`) ป้องกันกล่องบวม
+   - **Zone Fusion:** ผสานรวมโซน M15 และ H1 ที่ทับซ้อนกันให้เป็นโซน High Confluence เดียว (`combine_overlapping_zones`)
+   - **No Fake Zones in Sideway:** ห้ามสร้างโซนในดง Sideway/Chop บังคับแท่งหลุด Base ต้องมีขนาด >= 1.5x Avg Body
+
+2. โครงข่าย Multi-Swing ZigZag Fibonacci (PineScript V3 Logic)
+   - อิงตรรกะ PineScript ZigZag Pivot (`pivot_legs = 8`, `min_deviation_pct = 0.8%`)
+   - ตรวจจับโครงสร้าง 2 ลำดับขั้น:
+     * **Major Swing:** สวิงหลักระดับ Macro คุมทิศทางรอบใหญ่
+     * **Minor Swing:** สวิงย่อยรอบ Pullback ในกรอบสั้น
+   - หาจุดเข้าทำใน Golden Zone 0.618 - 0.650 (OTE - Optimal Trade Entry) - 0.786
+   - ระบุจุด **Double Confluence Zone:** บริเวณที่ Fibo ของ Major Swing และ Minor Swing มาซ้อนทับกัน
+
+3. กฎ Dynamic Downside Headroom Guard (ห้าม Sell ใส่แนวรับหรือ Low of Day)
+   - บล็อกคำสั่ง SELL ทันทีหากระยะห่างถึงแนวรับสำคัญ หรือ Low of Day น้อยกว่า 1.5x ATR (`REJECTED_NEAR_SUPPORT_HEADROOM`)
+   - ป้องกันการขายใส่จุดต่ำสุด (Selling into Support) ถอดบทเรียนจากเคส Ticket #4772799315 [XAU-RULE-19]
+
+4. กฎการตัดจบโซนที่ถูกทำลาย (Broken Zone Lifecycle)
+   - เมื่อราคาปิดทะลุขอบล่างของ Demand (`Close < Zone Low`) หรือทะลุขอบบนของ Supply (`Close > Zone High`) โซนนั้นจะสิ้นสุดอายุทันที ณ แท่งที่ Break
+   - ห้ามลากยืดกล่องที่ตายแล้วข้ามมาในปัจจุบันเด็ดขาด เพื่อไม่ให้กราฟรกและวิเคราะห์ผิดเพี้ยน
+
+5. จุดเข้าเทรดและทริกเกอร์อัจฉริยะ (Smart Entry on M5/M15)
+   - **Tight Zone Proximity:** ราคาต้องแตะเนื้อโซนหรือห่างไม่เกิน 0.35x ATR
+   - **Rejection Wick Filter:** ต้องมีไส้เทียนปฏิเสธราคา >= 25% ของแท่งเทียน หรือแท่งกลับตัวพ้นกึ่งกลางโซน
+   - **Anti-Knife Guards:**
+     * `REJECTED_FALLING_KNIFE`: บล็อกการ Buy หากเป็นแท่งแดงตัน >= 70% และความยาว >= 1.8x ATR
+     * `REJECTED_ROCKET_SURGE`: บล็อกการ Sell หากเป็นแท่งเขียวตัน >= 70% และความยาว >= 1.8x ATR
+   - **Role Reversal:** รอราคาทดสอบแนวรับ/ต้านที่เพิ่งสลับหน้าที่ (Retest) พร้อมแท่งปฏิเสธราคา
+
+6. ช่วงเวลาตลาด (Trading Sessions & Session Overlap)
+   - โฟกัสช่วง **London × New York Overlap (20:00 - 23:00 น. BKK UTC+7)** ซึ่งมี Volume & Liquidity สูงสุด
+   - โตเกียว/ซิดนีย์ สภาพคล่องต่ำ สเปรดอาจกว้าง เลี่ยงการเล่น Breakout
+
+7. กฎความปลอดภัยและการคุมความเสี่ยงทองคำ
+   - **Hard SL Cap:** ระยะ SL ห้ามกว้างเกิน $6.00 USD เด็ดขาด (`REJECTED_SL_TOO_WIDE`)
+   - **Moat Buffer:** คำนวณ SL หลบหลังขอบ Base + บัฟเฟอร์ (1.5x - 2.0x ATR + Live Spread)
+   - **Front-Running TP:** วางดักหน้าแนวต้าน/รับถัดไปเพื่อชิงปิดทำกำไร
+   - **Headroom Guard:** ระยะถึงแนวต้านถัดไปต้อง >= 1.0x ATR สำหรับ BUY และ >= 1.5x ATR สำหรับ SELL
+   - **Live Spread Guard:** หากสเปรดเกิน 0.50 USD (50 จุด) สั่งงดเปิดสถานะทุกกรณี
+   - **No Overnight:** ปิดจบในวัน ไม่ถือข้ามคืน
+   - **Single-Position Rule:** 1 สินทรัพย์ต่อ 1 ไม้ ห้ามเปิดซ้อน ห้าม Hedging
+
+================================================================================
+ส่วนที่ 4: ขั้นตอนการทำงานและการสั่งงาน AI (AI Runtime Workflow & CLI Bridge)
+================================================================================
+
+เมื่อคุณสั่งให้ Antigravity วิเคราะห์ตลาด AI จะทำงานตามลำดับขั้นตอน (SOP) ดังนี้:
+
+ขั้นตอนที่ 1: ดึงข้อมูลสด (Data Ingestion)
+- รันคำสั่งตรวจตลาดผ่าน MT5 Data Adapter ดึงราคา Bid/Ask, สเปรด และแท่งเทียนสด
+
+ขั้นตอนที่ 2: ตรวจสอบสถานะบัญชีและออเดอร์ค้าง (Account & Risk Audit)
+- ตรวจสอบยอด Balance, Equity, Free Margin และสถานะเปิดที่ค้างอยู่ (บังคับ Single-Position)
+
+ขั้นตอนที่ 3: ประมวลผลทางเทคนิคตามกลยุทธ์สินทรัพย์ (Algorithmic Filtering)
+- หุ้น 7 ตัว: Pivot Fractal S/R, Headroom Guard, Trend WEEK, Reversal M15
+- BTC 1m: 1m Demand/Supply, Trendline, RSI(14), EMA 20
+- XAU/USD: Multi-TF Base Structure, Clamping, Zone Fusion, Rejection Wick, Session Overlap, SL Cap <= $6.00
+
+ขั้นตอนที่ 4: สรุปผลลัพธ์และคำวินิจฉัย (Verdict Generation)
+- สรุปผลออกมาเป็น 4 มิติ พร้อมระบุ Target Entry Zone และระยะห่างจากราคาปัจจุบันอย่างโปร่งใส
+
+ขั้นตอนที่ 5: ขอคำยืนยันก่อนส่งคำสั่ง (Execution Gate)
+- หากมีตัวที่ผ่านเกณฑ์ครบ AI จะแสดงแผน Entry / SL / TP อย่างชัดเจน และขอคำยืนยันก่อนยิงเข้า MT5
+
+--------------------------------------------------------------------------------
+ชุดคำสั่ง CLI สำหรับ Antigravity (Agent Bridge):
+--------------------------------------------------------------------------------
+- สแกนทองคำ XAU/USD:     `python -m src.execution.agent_bridge gold-strategy`
+- สแกนบิตคอยน์ BTC 1m:     `python -m src.execution.agent_bridge btc-scalp`
+- สแกนหุ้นสหรัฐฯ:          `python -m src.execution.agent_bridge scan --symbol AAPL`
+- ตรวจสอบบัญชีและสถานะ:    `python -m src.execution.agent_bridge account`
+- ซิงค์ประวัติไม้ปิด MT5:     `python -m src.analysis.trade_reviewer`
+- คอมไพล์ Playbook:       `python -m src.analysis.playbook_compiler`
+================================================================================

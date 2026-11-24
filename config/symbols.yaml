@@ -1,0 +1,120 @@
+# Tracked US Equities Specifications & MT5 Exness Mapping
+# Includes US Stocks and Exness Commodity / Crypto CFDs (XAUUSDm, BTCUSDm)
+
+symbols:
+  AAPL:
+    name: "Apple Inc."
+    exchange: "NASDAQ"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "AAPL"
+    base_price_estimate: 228.0
+    typical_spread_usd: 0.12
+
+  MSFT:
+    name: "Microsoft Corporation"
+    exchange: "NASDAQ"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "MSFT"
+    base_price_estimate: 425.0
+    typical_spread_usd: 0.25
+
+  NVDA:
+    name: "NVIDIA Corporation"
+    exchange: "NASDAQ"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "NVDA"
+    base_price_estimate: 145.0
+    typical_spread_usd: 0.16
+
+  AMZN:
+    name: "Amazon.com Inc."
+    exchange: "NASDAQ"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "AMZN"
+    base_price_estimate: 205.0
+    typical_spread_usd: 0.18
+
+  GOOGL:
+    name: "Alphabet Inc. (Class A - Voting)"
+    exchange: "NASDAQ"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "GOOGL"
+    base_price_estimate: 175.0
+    typical_spread_usd: 0.30
+
+  META:
+    name: "Meta Platforms Inc."
+    exchange: "NASDAQ"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "META"
+    base_price_estimate: 580.0
+    typical_spread_usd: 0.35
+
+  TSLA:
+    name: "Tesla Inc."
+    exchange: "NASDAQ"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "TSLA"
+    base_price_estimate: 340.0
+    typical_spread_usd: 0.25
+
+  BTCUSD:
+    name: "Bitcoin vs US Dollar (Exness Crypto CFD)"
+    exchange: "EXNESS"
+    currency: "USD"
+    tick_size: 0.01
+    contract_size: 1.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "BTCUSDm"
+    base_price_estimate: 60600.0
+    typical_spread_usd: 6.40
+
+  XAUUSD:
+    name: "Gold (Spot) vs US Dollar (Exness CFD)"
+    exchange: "EXNESS"
+    currency: "USD"
+    tick_size: 0.001
+    contract_size: 100.0
+    min_volume: 0.01
+    volume_step: 0.01
+    max_volume: 50.0
+    mt5_symbol: "XAUUSDm"
+    base_price_estimate: 2650.0
+    typical_spread_usd: 0.24

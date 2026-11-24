@@ -1,0 +1,1374 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoTrade - US Equities & MT5 CFD System (Modern Fintech Light)</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <!-- Offline Standalone TradingView Lightweight Charts Library -->
+  <script src="/static/js/lightweight-charts.standalone.production.js"></script>
+</head>
+
+<body>
+
+  <!-- Top System Header (Dime Style) -->
+  <header>
+    <div class="brand">
+      <div class="brand-logo-icon">AT</div>
+      <div>
+        <h1>AUTOTRADE</h1>
+        <div style="font-size: 11px; color: var(--text-muted); font-weight: 600;">US EQUITIES & CFD MT5 SYSTEM</div>
+      </div>
+    </div>
+
+    <!-- Prominent Safety & Status Badges -->
+    <div class="system-status-pills">
+      <span class="pill pill-readonly" id="pill-trading-mode">MODE: READ-ONLY</span>
+      <!-- Dynamic Data Source Switcher -->
+      <div
+        style="display: inline-flex; align-items: center; gap: 6px; background: #fff; padding: 3px 8px; border-radius: 20px; border: 1px solid var(--border-color); box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+        <span style="font-size: 11px; font-weight: 700; color: var(--text-secondary);">FEED:</span>
+        <select id="select-data-source" onchange="onSwitchDataSource(this.value)"
+          style="border: none; background: transparent; font-size: 11px; font-weight: 700; color: var(--dime-blue); cursor: pointer; outline: none;">
+          <option value="MOCK">🔵 Simulation (Mock)</option>
+          <option value="MT5">🟢 Exness MT5 (Live)</option>
+        </select>
+      </div>
+      <span class="pill pill-sim" id="pill-data-status">DATA: SIMULATION</span>
+      <span class="pill" id="pill-account-badge"
+        style="background: var(--dime-green-bg); color: var(--dime-green); border: 1px solid rgba(16, 185, 129, 0.3); display: none;">
+        PORT: <span id="val-account-login">--</span>
+      </span>
+      <span class="pill pill-market" id="pill-market-session">SESSION: REGULAR</span>
+      <span class="pill"
+        style="background: var(--dime-purple-bg); color: var(--dime-purple); border: 1px solid rgba(139, 92, 246, 0.3);">
+        LEVERAGE CAP: 1:5
+      </span>
+      <span class="pill" id="pill-capital-badge"
+        style="background: var(--dime-blue-bg); color: var(--dime-blue); border: 1px solid rgba(37, 99, 235, 0.3);">
+        CAPITAL: <span id="val-header-capital">3,000 THB</span>
+      </span>
+    </div>
+
+    <!-- Multi-timezone Clock -->
+    <div class="time-bar">
+      <div>UTC: <strong id="clock-utc" style="color: var(--text-primary);">--:--:--</strong></div>
+      <div>NY (ET): <strong id="clock-et" style="color: var(--text-primary);">--:--:--</strong></div>
+      <div>BKK (+7): <strong id="clock-bkk" style="color: var(--dime-green);">--:--:--</strong></div>
+    </div>
+  </header>
+
+  <!-- Navigation Tabs -->
+  <nav class="nav-tabs">
+    <button class="nav-tab active" onclick="switchTab('overview')">Overview</button>
+    <button class="nav-tab" onclick="switchTab('journal')">📊 Trading Journal Pro</button>
+    <button class="nav-tab" onclick="switchTab('charts')">Interactive Charts</button>
+    <button class="nav-tab" onclick="switchTab('plans')">⚡ Plans & AI Analysis</button>
+    <button class="nav-tab" onclick="switchTab('orders')">💼 MT5 Orders & Positions</button>
+    <button class="nav-tab" onclick="switchTab('backtest')">📈 Backtest & Analytics</button>
+    <button class="nav-tab" onclick="switchTab('zones')">S/R Zones & Tools</button>
+    <button class="nav-tab" onclick="switchTab('gallery')">Journal & Gallery</button>
+    <button class="nav-tab" onclick="switchTab('memory')">🧠 AI Memory & Playbook</button>
+    <button class="nav-tab" onclick="switchTab('settings')">Settings & Safety</button>
+  </nav>
+
+  <!-- Main Content Areas -->
+  <main>
+    <!-- TAB 1: OVERVIEW -->
+    <section id="tab-overview" class="tab-pane active">
+      <div class="overview-grid">
+        <div class="card">
+          <div class="card-title">Trading Mode</div>
+          <div class="card-value" style="color: var(--dime-blue);" id="card-mode-val">READ-ONLY</div>
+          <div class="card-sub">Order execution disabled. Safe simulation only.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Tracked Equities</div>
+          <div class="card-value" id="card-symbols-count">7 Symbols</div>
+          <div class="card-sub">AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Risk Management Rule</div>
+          <div class="card-value" style="color: var(--dime-purple);">Leverage ≤ 1:5</div>
+          <div class="card-sub">Capital base: 3,000 THB (~$85 USD). Max Notional: 15,000 THB.</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Data Ingestion Engine</div>
+          <div class="card-value" style="color: var(--dime-amber);" id="card-adapter-val">MOCK ADAPTER</div>
+          <div class="card-sub">Historical & simulated bars until Webull API configured.</div>
+        </div>
+      </div>
+
+      <!-- Symbols Table -->
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div
+          style="padding: 16px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <h2 style="font-size: 15px; font-weight: 800;">Tracked US Equities Specifications</h2>
+          <span style="font-size: 12px; color: var(--text-secondary);">Selected Voting Class: <strong>GOOGL (Alphabet
+              Inc. Class A)</strong></span>
+        </div>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Company Name</th>
+                <th>Exchange</th>
+                <th id="th-price-label">Current / Live Price</th>
+                <th>MT5 CFD Symbol</th>
+                <th>Contract Size</th>
+                <th>Min Volume</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="stocks-table-body">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: INTERACTIVE CHARTS -->
+    <section id="tab-charts" class="tab-pane">
+      <div class="chart-controls">
+        <!-- Symbol Selection Buttons -->
+        <div class="btn-group" id="symbol-buttons">
+          <button class="btn active" onclick="selectSymbol('AAPL')">AAPL</button>
+          <button class="btn" onclick="selectSymbol('MSFT')">MSFT</button>
+          <button class="btn" onclick="selectSymbol('NVDA')">NVDA</button>
+          <button class="btn" onclick="selectSymbol('AMZN')">AMZN</button>
+          <button class="btn" onclick="selectSymbol('GOOGL')">GOOGL</button>
+          <button class="btn" onclick="selectSymbol('META')">META</button>
+          <button class="btn" onclick="selectSymbol('TSLA')">TSLA</button>
+          <button class="btn btn-warning" style="font-weight: 700; color: #b45309;" onclick="selectSymbol('XAUUSD')">🟡
+            XAUUSD</button>
+          <button class="btn btn-warning" style="font-weight: 700; color: #d97706;" onclick="selectSymbol('BTCUSD')">₿
+            BTCUSD</button>
+        </div>
+
+        <!-- Timeframe Buttons -->
+        <div class="btn-group" id="tf-buttons">
+          <button class="btn" onclick="selectTimeframe('1W')">WEEK</button>
+          <button class="btn active" onclick="selectTimeframe('1D')">DAY</button>
+          <button class="btn" onclick="selectTimeframe('15m')">M15</button>
+          <button class="btn" onclick="selectTimeframe('5m')">M5</button>
+          <button class="btn" onclick="selectTimeframe('1m')">M1</button>
+        </div>
+
+        <!-- Overlays & Tools -->
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <label
+            style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="check-ema" checked onchange="toggleEMA()"> EMA (15, 50, 100, 200)
+          </label>
+          <label
+            style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="check-sr" checked onchange="toggleSR()"> S/R Zones
+          </label>
+          <button class="btn btn-outline" id="btn-fullscreen-chart" onclick="toggleChartFullscreen()"
+            style="font-weight: 700;">⛶ ขยายเต็มจอ</button>
+          <button class="btn btn-success" onclick="triggerSnapshot()">📷 Capture Screenshot</button>
+        </div>
+      </div>
+
+      <!-- Chart Display Area -->
+      <div class="chart-wrapper">
+        <button id="btn-chart-floating-exit" onclick="toggleChartFullscreen()" title="ออกจากการขยายเต็มจอ (ESC)">
+          ✕ ออกจากโหมดเต็มจอ (ESC)
+        </button>
+        <div class="chart-overlay-info" id="chart-overlay-info">
+          <span id="chart-label-sym" style="font-weight: 800; color: var(--text-primary);">AAPL</span>
+          <span id="chart-label-tf" style="color: var(--dime-blue); font-weight: 700;">[DAY]</span>
+          <span id="chart-label-price"
+            style="margin-left: 8px; font-weight: 800; color: var(--dime-green);">$0.00</span>
+          <span id="chart-label-atr" style="margin-left: 8px; color: var(--text-muted);">ATR(14): 0.00</span>
+        </div>
+        <div id="tradingview-chart-container"></div>
+      </div>
+    </section>
+
+    <!-- TAB 3: PLANS & AI ANALYSIS (Dime Style) -->
+    <section id="tab-plans" class="tab-pane">
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 style="font-size: 18px; font-weight: 800; color: var(--text-primary);">⚡ แผนการเทรดและบทวิเคราะห์ตลาดจาก
+            AI (Plans & AI Analysis)
+          </h2>
+          <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">
+            ระบบตรวจจับจุดเด้งแนวรับ-แนวต้าน, กรองระยะวิ่ง (Headroom Guard ห้าม Buy ชนแนวต้าน), และจำกัด Leverage
+            สูงสุดไม่เกิน 1:5
+          </p>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button class="btn btn-success" onclick="evaluateAllPlans()">⚡ สแกนแผนหุ้น 7 ตัว (Evaluate)</button>
+          <button class="btn btn-indigo" onclick="copyAntigravityContext()">📋 คัดลอกข้อมูลให้ Antigravity</button>
+          <button class="btn" onclick="fetchBtcScalpAnalysis()"
+            style="background: #f59e0b; color: #fff; font-weight: 700; border: none;">⚡ วิเคราะห์ BTC 1m
+            (โหมดซิ่ง)</button>
+          <button class="btn" onclick="fetchGoldAnalysis()"
+            style="background: #eab308; color: #1e293b; font-weight: 700; border: none;">⚡ วิเคราะห์ XAU/USD
+            (ทองคำ)</button>
+        </div>
+      </div>
+
+      <div class="plans-grid">
+        <!-- Left: Active Plan Card (Dime Investment Style) -->
+        <div class="dime-plan-card">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-size: 12px; color: var(--text-muted); font-weight: 700;">สถานะแผนการเทรด</span>
+            <span class="dime-plan-badge badge-ready" id="plan-badge-status">พร้อมให้ตรวจสอบ</span>
+          </div>
+
+          <div style="margin-top: 14px;">
+            <div style="font-size: 28px; font-weight: 900; color: var(--text-primary); letter-spacing: -0.5px;"
+              id="plan-symbol-title">AAPL</div>
+            <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;" id="plan-strategy-desc">
+              เด้งแนวรับระดับวัน (DAY Support Bounce)
+            </div>
+          </div>
+
+          <!-- Price Level Grid -->
+          <div class="plan-price-row">
+            <div>
+              <div class="plan-price-label">ราคาเข้า (Entry)</div>
+              <div class="plan-price-val" id="plan-entry-val">$0.00</div>
+            </div>
+            <div>
+              <div class="plan-price-label">ตัดขาดทุน (SL)</div>
+              <div class="plan-price-val" style="color: var(--dime-red);" id="plan-sl-val">$0.00</div>
+            </div>
+            <div>
+              <div class="plan-price-label">ทำกำไร (TP)</div>
+              <div class="plan-price-val" style="color: var(--dime-green);" id="plan-tp-val">$0.00</div>
+            </div>
+          </div>
+
+          <!-- Risk & MM Details -->
+          <div
+            style="display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; padding: 12px 0; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle);">
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-secondary);">อัตราคุ้มเสี่ยง (Risk/Reward):</span>
+              <strong id="plan-rr-val" style="color: var(--dime-green);">1 : 2.50</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-secondary);">ขนาดคำสั่ง (Exness CFD):</span>
+              <strong id="plan-lot-val">0.01 Lot (1 หุ้น)</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-secondary);">งบความเสี่ยงที่ยอมรับได้:</span>
+              <strong id="plan-risk-thb-val">~52.50 THB (1.75%)</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-secondary);">เลเวอเรจที่ใช้จริง (Effective Leverage):</span>
+              <strong id="plan-leverage-val">1:2.40 (เพดานไม่เกิน 1:5)</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-secondary);">ระยะห่างถึงแนวต้าน (Headroom):</span>
+              <strong id="plan-headroom-val" style="color: var(--dime-green);">$12.40 (2.4x ATR)</strong>
+            </div>
+          </div>
+
+          <!-- Plan Action Button -->
+          <div style="margin-top: 20px;">
+            <button class="btn btn-success"
+              style="width: 100%; padding: 12px; font-size: 14px; justify-content: center; font-weight: 700;"
+              onclick="triggerTwoStepModal()">
+              ✓ อนุมัติแผนและส่งคำสั่งเข้า MT5 (Two-Step Review)
+            </button>
+          </div>
+        </div>
+
+        <!-- Right: AI Market Narrative & Non-Entry Journal -->
+        <div style="display: flex; flex-direction: column; gap: 20px;">
+          <!-- AI Market Narrative Card -->
+          <div class="ai-narrative-box">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 20px;">🤖</span>
+                <h3 style="font-size: 16px; font-weight: 800; color: var(--text-primary);">บทวิเคราะห์ 4 มิติจาก AI (AI
+                  Trend & Strategy Narrative)
+                </h3>
+              </div>
+              <span class="brand-badge"
+                style="background: var(--dime-blue-bg); color: var(--dime-blue);">ระบบวิเคราะห์เชิงคุณภาพ</span>
+            </div>
+
+            <div class="ai-pillar" style="border-left-color: var(--dime-blue);">
+              <div class="ai-pillar-title">1. ภาพรวมแนวโน้มใหญ่ (Macro & WEEK Context)</div>
+              <div class="ai-pillar-desc" id="ai-week-desc">กำลังวิเคราะห์แนวโน้มของสถาบันการเงินระยะยาว...</div>
+            </div>
+
+            <div class="ai-pillar" style="border-left-color: var(--dime-green);">
+              <div class="ai-pillar-title">2. โครงสร้างราคาและโซนแนวรับ (DAY Structure & Zone Test)</div>
+              <div class="ai-pillar-desc" id="ai-day-desc">กำลังประเมินคุณภาพของแนวรับและแนวต้านสำคัญ...</div>
+            </div>
+
+            <div class="ai-pillar" style="border-left-color: var(--dime-amber);">
+              <div class="ai-pillar-title">3. ตรวจสอบสิ่งกีดขวางแนวต้าน (Headroom Guard)</div>
+              <div class="ai-pillar-desc" id="ai-headroom-desc">กำลังวัดระยะห่างถึงแนวต้านใหญ่ด้านบน...
+              </div>
+            </div>
+
+            <div class="ai-pillar" style="border-left-color: var(--dime-purple);">
+              <div class="ai-pillar-title">4. สรุปคำตัดสินใจและการบริหารเงิน (Actionable Verdict)</div>
+              <div class="ai-pillar-desc" id="ai-verdict-desc" style="font-weight: 700; color: var(--text-primary);">
+                กำลังประมวลผลคำแนะนำ...</div>
+            </div>
+          </div>
+
+          <!-- Non-Entry Reasons Journal Table -->
+          <div class="card" style="padding: 0; overflow: hidden;">
+            <div
+              style="padding: 14px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+              <div>
+                <h3 style="font-size: 14px; font-weight: 800;">สมุดบันทึกเหตุผลที่ไม่เข้าเทรด (Non-Entry Journal)
+                </h3>
+                <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">
+                  บันทึกวินัยอัตโนมัติ: แสดงเหตุผลว่าทำไมหุ้นหรือสินทรัพย์นั้นๆ ถึงถูกปฏิเสธ (เช่น ติดแนวต้าน, R:R
+                  ไม่คุ้ม)
+                </div>
+              </div>
+              <button class="btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadNonEntryJournal()">🔄
+                รีเฟรชข้อมูล</button>
+            </div>
+            <div class="table-responsive">
+              <table>
+                <thead>
+                  <tr>
+                    <th>สินทรัพย์ (Symbol)</th>
+                    <th>สถานะ (Status)</th>
+                    <th>ราคาอ้างอิง (Price)</th>
+                    <th>เหตุผลที่ปฏิเสธไม่เข้าเทรด (Rejection Reason)</th>
+                  </tr>
+                </thead>
+                <tbody id="journal-table-body">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: MT5 ORDERS & POSITIONS -->
+    <section id="tab-orders" class="tab-pane">
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 style="font-size: 18px; font-weight: 800; color: var(--text-primary);">💼 MetaTrader 5 Orders & Positions
+          </h2>
+          <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">
+            Live terminal IPC bridge, verified Hard Stop Losses, order idempotency, and fail-safe recovery.
+          </p>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <span class="dime-plan-badge" id="mt5-badge-status"
+            style="background: var(--dime-blue-bg); color: var(--dime-blue); font-size: 12px; padding: 6px 14px;">
+            MT5: CHECKING...
+          </span>
+          <button class="btn" onclick="reconnectMT5()">🔄 Reconnect MT5</button>
+        </div>
+      </div>
+
+      <!-- Account Summary Cards -->
+      <div class="overview-grid">
+        <div class="card">
+          <div class="card-title">Account Balance</div>
+          <div class="card-value" style="color: var(--dime-blue);" id="mt5-val-balance">$0.00</div>
+          <div class="card-sub" id="mt5-val-balance-thb">~0.00 THB</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Equity (Net Asset Value)</div>
+          <div class="card-value" style="color: var(--dime-green);" id="mt5-val-equity">$0.00</div>
+          <div class="card-sub" id="mt5-val-equity-thb">~0.00 THB</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Free Margin</div>
+          <div class="card-value" id="mt5-val-margin">$0.00</div>
+          <div class="card-sub" id="mt5-val-server">Server: Exness-MT5Trial</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Execution Mode</div>
+          <div class="card-value" style="color: var(--dime-purple);" id="mt5-val-auto-mode">TWO-STEP CONFIRM</div>
+          <div class="card-sub">User confirmation required before execution.</div>
+        </div>
+      </div>
+
+      <!-- Live Open Positions Table -->
+      <div class="card" style="margin-bottom: 24px; padding: 0; overflow: hidden;">
+        <div
+          style="padding: 16px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: #fafbfc; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <h3 style="font-size: 14.5px; font-weight: 800; color: var(--text-primary);">
+              Live Open Positions (สถานะเปิดใน MT5)
+            </h3>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+              Positions currently held at broker with verified Hard Stop Loss & Take Profit.
+            </div>
+          </div>
+          <button class="btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadMT5Positions()">🔄 Refresh
+            Positions</button>
+        </div>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Ticket #</th>
+                <th>Symbol</th>
+                <th>Direction</th>
+                <th>Volume (Lot)</th>
+                <th>Open Price</th>
+                <th>Current Price</th>
+                <th style="color: var(--dime-red);">Hard SL</th>
+                <th style="color: var(--dime-green);">Take Profit</th>
+                <th>Floating P/L</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="mt5-positions-table-body">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Emergency Kill Switch Panel -->
+      <div class="card" style="border-color: rgba(239, 68, 68, 0.3);">
+        <div
+          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--dime-red);">⚠️ Emergency Controls & Safety (MT5
+              Execution)</h3>
+            <div style="font-size: 12px; color: var(--text-secondary);">Direct failsafe controls wired to terminal.
+              Emergency Close immediately sends opposite market orders.</div>
+          </div>
+          <button class="btn btn-danger" style="padding: 10px 18px; white-space: nowrap;"
+            onclick="emergencyCloseAllPositions()">
+            🛑 EMERGENCY CLOSE ALL POSITIONS
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: BACKTEST & ANALYTICS (Dime Style) -->
+    <section id="tab-backtest" class="tab-pane">
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 style="font-size: 18px; font-weight: 800; color: var(--text-primary);">📈 Quantitative Backtest &
+            Robustness Analytics</h2>
+          <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">
+            Deterministic simulation with real Exness CFD spreads (GOOGL $0.30, NVDA $0.16), 70/30
+            In-Sample/Out-of-Sample split, and zero look-ahead bias.
+          </p>
+        </div>
+        <button class="btn btn-success" id="btn-run-backtest" onclick="runNewBacktest()">
+          🚀 Re-Run 7-Asset Backtest (70/30 Split)
+        </button>
+      </div>
+
+      <!-- KPI Summary Cards -->
+      <div class="overview-grid">
+        <div class="card">
+          <div class="card-title">Net Return (สุทธิหลังหักต้นทุน)</div>
+          <div class="card-value" style="color: var(--dime-green);" id="bt-net-profit">+0.00 THB</div>
+          <div class="card-sub" id="bt-net-return">+0.00% on 3,000 THB Capital</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Win Rate (%)</div>
+          <div class="card-value" style="color: var(--dime-blue);" id="bt-win-rate">0.0%</div>
+          <div class="card-sub" id="bt-trade-count">0 Wins / 0 Losses (Total: 0)</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Profit Factor</div>
+          <div class="card-value" style="color: var(--dime-purple);" id="bt-profit-factor">0.00</div>
+          <div class="card-sub">Gross Profit / Gross Loss Ratio</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Max Drawdown</div>
+          <div class="card-value" style="color: var(--dime-red);" id="bt-max-dd">0.00%</div>
+          <div class="card-sub" id="bt-max-dd-thb">Maximum peak-to-trough drop: 0 THB</div>
+        </div>
+      </div>
+
+      <!-- Side-by-Side In-Sample vs Out-of-Sample Comparison -->
+      <div class="card" style="margin-bottom: 24px; padding: 0; overflow: hidden;">
+        <div
+          style="padding: 16px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: #fafbfc; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <h3 style="font-size: 14.5px; font-weight: 800; color: var(--text-primary);">
+              ⚖️ In-Sample (70%) vs Out-of-Sample (30%) Robustness Validation
+            </h3>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+              Compares development data vs unseen forward test to verify strategy does not overfit historical noise.
+            </div>
+          </div>
+          <span class="dime-plan-badge badge-ready">70/30 Validated</span>
+        </div>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Performance Metric</th>
+                <th style="color: var(--dime-blue);">In-Sample (70% Train)</th>
+                <th style="color: var(--dime-green);">Out-of-Sample (30% Unseen Test)</th>
+                <th>Consistency Assessment</th>
+              </tr>
+            </thead>
+            <tbody id="bt-split-table-body">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Equity Curve Card -->
+      <div class="card" style="margin-bottom: 24px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--text-primary);">Portfolio Equity Curve
+              (การเติบโตของเงินทุน)</h3>
+            <div style="font-size: 12px; color: var(--text-muted);">Cumulative balance starting from 3,000 THB initial
+              capital.</div>
+          </div>
+          <div style="font-size: 13px; font-weight: 700; color: var(--dime-green);" id="bt-final-equity">
+            Current Equity: 3,000.00 THB
+          </div>
+        </div>
+        <div style="height: 220px; width: 100%; position: relative;">
+          <canvas id="equity-curve-canvas" style="width: 100%; height: 100%;"></canvas>
+        </div>
+      </div>
+
+      <!-- Per-Stock Breakdown & Trade Logs -->
+      <div class="grid-2col">
+        <!-- Stock-by-Stock Breakdown -->
+        <div class="card" style="padding: 0; overflow: hidden;">
+          <div style="padding: 14px 18px; border-bottom: 1px solid var(--border-color); background: #fafbfc;">
+            <h3 style="font-size: 14px; font-weight: 800;">Asset Breakdown (7 US Stocks)</h3>
+          </div>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Trades</th>
+                  <th>Win Rate</th>
+                  <th>Net P/L (THB)</th>
+                  <th>Profit Factor</th>
+                </tr>
+              </thead>
+              <tbody id="bt-asset-table-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Detailed Trade Log -->
+        <div class="card" style="padding: 0; overflow: hidden;">
+          <div
+            style="padding: 14px 18px; border-bottom: 1px solid var(--border-color); background: #fafbfc; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <h3 style="font-size: 14px; font-weight: 800;">Recent Trade Executions Log</h3>
+            <span style="font-size: 11.5px; color: var(--text-muted);">Real Exness Spreads Deducted</span>
+          </div>
+          <div style="max-height: 380px; overflow-y: auto;" class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Exit Date</th>
+                  <th>P/L (THB)</th>
+                  <th>Exit Reason</th>
+                  <th>Split</th>
+                </tr>
+              </thead>
+              <tbody id="bt-trade-log-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 6: S/R ZONES & TOOLS -->
+    <section id="tab-zones" class="tab-pane">
+      <div class="grid-2col">
+        <!-- Auto S/R Zones Table -->
+        <div class="card" style="padding: 0; overflow: hidden;">
+          <div
+            style="padding: 16px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <h2 style="font-size: 15px; font-weight: 800;">Auto-Detected S/R Zones (DAY Pivot Fractal N=3)</h2>
+            <span style="font-size: 11.5px; color: var(--text-muted);">Buffer: 0.5 × ATR(14)</span>
+          </div>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Range (USD)</th>
+                  <th>Touches</th>
+                  <th>Freshness</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="zones-table-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Manual Zone Creation & Management -->
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+            <h2 style="font-size: 15px; font-weight: 800;">Manual Zones Manager (Draw & Lock)</h2>
+          </div>
+          <form id="manual-zone-form" onsubmit="handleCreateManualZone(event)"
+            style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px;">
+            <div>
+              <label
+                style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Zone
+                Type</label>
+              <select id="man-zone-type" style="width: 100%;">
+                <option value="SUPPORT">Support Zone</option>
+                <option value="RESISTANCE">Resistance Zone</option>
+              </select>
+            </div>
+            <div>
+              <label
+                style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Label</label>
+              <input type="text" id="man-zone-label" placeholder="e.g. Major Daily Demand" style="width: 100%;"
+                required>
+            </div>
+            <div>
+              <label
+                style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Price
+                High</label>
+              <input type="number" step="0.01" id="man-zone-high" placeholder="0.00" style="width: 100%;" required>
+            </div>
+            <div>
+              <label
+                style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Price
+                Low</label>
+              <input type="number" step="0.01" id="man-zone-low" placeholder="0.00" style="width: 100%;" required>
+            </div>
+            <div style="grid-column: span 2;">
+              <button type="submit" class="btn btn-success"
+                style="width: 100%; padding: 10px; justify-content: center;">+ Add Manual Zone</button>
+            </div>
+          </form>
+
+          <h3 style="font-size: 12.5px; margin-bottom: 10px; font-weight: 700; color: var(--text-secondary);">Saved
+            Manual Zones</h3>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>Type</th>
+                  <th>Range</th>
+                  <th>Lock</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="manual-zones-table-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 7: JOURNAL & GALLERY -->
+    <section id="tab-gallery" class="tab-pane">
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 style="font-size: 16px; font-weight: 800;">Captured Charts Journal</h2>
+          <p style="font-size: 12.5px; color: var(--text-secondary);">Auto-saved screenshots in
+            screenshots/YYYY-MM-DD/SYMBOL/TF/ with companion JSON metadata.</p>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <div class="gallery-filters"
+            style="display: flex; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 2px;">
+            <button class="btn btn-sm active" id="gallery-filter-ALL" onclick="filterGallery(null)"
+              style="padding: 4px 12px; font-size: 12px; border-radius: 6px;">🌐 ทั้งหมด (All)</button>
+            <button class="btn btn-sm" id="gallery-filter-XAUUSD" onclick="filterGallery('XAUUSD')"
+              style="padding: 4px 12px; font-size: 12px; border-radius: 6px;">🟡 XAU/USD (Gold)</button>
+            <button class="btn btn-sm" id="gallery-filter-BTCUSD" onclick="filterGallery('BTCUSD')"
+              style="padding: 4px 12px; font-size: 12px; border-radius: 6px;">₿ BTC/USD (Bitcoin)</button>
+          </div>
+          <button class="btn" onclick="loadScreenshots()">🔄 Refresh</button>
+        </div>
+      </div>
+
+      <div class="gallery-grid" id="gallery-container">
+        <!-- Dynamically populated gallery cards -->
+      </div>
+    </section>
+
+    <!-- TAB 8: SETTINGS & SAFETY -->
+    <section id="tab-settings" class="tab-pane">
+      <div class="grid-2col">
+        <div class="card">
+          <h2 style="font-size: 16px; font-weight: 800; margin-bottom: 16px;">Money Management & Risk Constraints</h2>
+          <form onsubmit="handleSaveSettings(event)" style="display: flex; flex-direction: column; gap: 14px;">
+            <div>
+              <label
+                style="font-size: 12px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Base
+                Capital (THB)</label>
+              <input type="number" id="setting-capital" step="any" value="3000" style="width: 100%;">
+              <span style="font-size: 11px; color: var(--text-muted);">Baseline amount used for sizing. (3,000 THB
+                default)</span>
+            </div>
+            <div>
+              <label
+                style="font-size: 12px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Max
+                Total Leverage Cap</label>
+              <input type="number" id="setting-leverage" step="0.5" value="5.0" style="width: 100%;">
+              <span style="font-size: 11px; color: var(--text-muted);">Strict notional value limit: Volume × Contract
+                Size × Price ≤ Leverage × Capital</span>
+            </div>
+            <div>
+              <label
+                style="font-size: 12px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Risk
+                Per Trade (%)</label>
+              <input type="number" id="setting-risk" step="0.5" value="2.0" style="width: 100%;">
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 6px;">
+              <label
+                style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="setting-overnight" checked> Allow Overnight Holding
+              </label>
+              <label
+                style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="setting-weekend" checked> Allow Weekend Holding
+              </label>
+              <label
+                style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--dime-purple);">
+                <input type="checkbox" id="setting-auto-exec" checked onchange="toggleAutoExecutionMode()"> Enable
+                Auto-Execution on Demo (Hands-free execution)
+              </label>
+            </div>
+            <button type="submit" class="btn btn-success"
+              style="margin-top: 10px; padding: 10px; justify-content: center;">Save Settings</button>
+          </form>
+        </div>
+
+        <!-- Emergency Kill Switch Panel -->
+        <div class="card" style="border-color: rgba(239, 68, 68, 0.4);">
+          <h2 style="font-size: 16px; font-weight: 800; color: var(--dime-red); margin-bottom: 14px;">Emergency Kill
+            Switches & Safety</h2>
+          <p style="font-size: 12.5px; color: var(--text-secondary); margin-bottom: 16px;">
+            Hardened controls to immediately halt any automated background processing or incoming orders.
+          </p>
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <button class="btn btn-danger" style="padding: 12px; justify-content: center;"
+              onclick="alert('Kill Switch Activated: New order creation is BLOCKED.')">
+              🛑 STOP NEW ORDERS (Block New Entries)
+            </button>
+            <button class="btn" style="padding: 12px; justify-content: center; background: #e2e8f0;"
+              onclick="alert('Automation Halted: Continuous analysis loop is suspended.')">
+              ⏸️ HALT AUTOMATION (Suspend Signal Processing)
+            </button>
+            <button class="btn btn-danger" style="padding: 12px; justify-content: center; background: #b91c1c;"
+              onclick="emergencyCloseAllPositions()">
+              ⚠️ EMERGENCY CLOSE ALL POSITIONS
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 9: AI MEMORY & CONTINUOUS LEARNING -->
+    <section id="tab-memory" class="tab-pane">
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 style="font-size: 18px; font-weight: 800; color: var(--text-primary);">🧠 โครงข่ายความจำและการเรียนรู้ของ
+            AI (Antigravity Memory & Playbook)</h2>
+          <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">
+            ระบบวิเคราะห์สาเหตุแพ้-ชนะรายไม้ (Post-Mortem), ถอดบทเรียนเพื่อลดความผิดพลาด,
+            และสังเคราะห์เป็นกฎสั่งการที่อัปเดตต่อเนื่อง
+          </p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-indigo" onclick="syncMemoryDeals()">🔄 ดึงประวัติไม้ที่ปิดจาก MT5 (Sync)</button>
+          <button class="btn" style="background: var(--bg-card-subtle); border: 1px solid var(--border-color);"
+            onclick="loadMemoryPlaybook()">📄 โหลดกฎ Playbook ใหม่</button>
+        </div>
+      </div>
+
+      <div class="grid-2col">
+        <!-- Left: Active Playbook Rules -->
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--text-primary);">📖 กฎเหล็กที่ AI เรียนรู้ (Active
+              Playbook)</h3>
+            <span class="brand-badge" style="background: var(--dime-green-bg); color: var(--dime-green);">Tier 3:
+              กฎสั่งการ</span>
+          </div>
+          <div id="playbook-content-box"
+            style="background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 13px; white-space: pre-wrap; height: 500px; overflow-y: auto; color: var(--text-primary); line-height: 1.6;">
+            กำลังโหลด Active Playbook...</div>
+        </div>
+
+        <!-- Right: Closed Deals & Case Studies -->
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--text-primary);">📋 แฟ้มบทเรียนและสาเหตุรายไม้
+              (Case Studies)</h3>
+            <span class="brand-badge" style="background: var(--dime-purple-bg); color: var(--dime-purple);">Tier 2:
+              กรณีศึกษา</span>
+          </div>
+          <div id="cases-list-container"
+            style="display: flex; flex-direction: column; gap: 10px; height: 500px; overflow-y: auto;">
+            <div style="color: var(--text-muted); text-align: center; padding: 30px;">กำลังโหลดแฟ้มบทเรียน...</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: TRADING JOURNAL PRO (MULTI-PORTFOLIO) -->
+    <section id="tab-journal" class="tab-pane">
+      <!-- 1. Portfolio Switcher & Action Bar -->
+      <div class="jp-header-bar">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 13px; font-weight: 800; color: var(--text-primary);">PORTFOLIO:</span>
+            <select id="jp-portfolio-select" onchange="onSelectJournalPortfolio(this.value)"
+              style="font-size: 13px; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: 1.5px solid var(--border-color); background: #fff; color: var(--dime-blue); cursor: pointer; outline: none;">
+              <!-- Populated dynamically -->
+            </select>
+          </div>
+          <span class="pill" style="background: var(--dime-blue-bg); color: var(--dime-blue);" id="jp-cap-pill">CAPITAL:
+            $1,000</span>
+          <span class="pill" style="background: var(--dime-purple-bg); color: var(--dime-purple);"
+            id="jp-risk-pill">RISK: 1.0% ($10.00/ไม้)</span>
+          <span class="pill" id="jp-acc-pill"
+            style="background: var(--dime-green-bg); color: var(--dime-green);">ACCOUNT: DEFAULT</span>
+          <span class="pill" id="jp-mt5-status-pill"
+            style="background: #f1f5f9; color: var(--text-secondary); border: 1px solid var(--border-color); font-weight: 700;">MT5:
+            CHECKING...</span>
+        </div>
+
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <button class="btn btn-sm" id="btn-sync-mt5" onclick="syncMT5ToJournal()"
+            style="font-weight: 800; background: var(--dime-blue-bg); color: var(--dime-blue); border: 1.5px solid rgba(37, 99, 235, 0.4); display: inline-flex; align-items: center; gap: 5px;">
+            🔄 ซิงก์จาก MT5 (Sync MT5)
+          </button>
+          <button class="btn btn-sm" onclick="openNewPortfolioModal()" style="font-weight: 700;">+ New
+            Portfolio</button>
+          <button class="btn btn-sm" onclick="seedJournalData()" style="font-weight: 700; background: #f1f5f9;">📥 Seed
+            Sample Data</button>
+          <button class="btn btn-success btn-sm" onclick="openRecordTradeModal()" style="font-weight: 800;">+ Record
+            Trade</button>
+        </div>
+      </div>
+
+      <!-- Metric View Mode Selector: R Multiple / Currency Amount / Percentage -->
+      <div
+        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; background: #fff; padding: 10px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-color); flex-wrap: wrap; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 12.5px; font-weight: 700; color: var(--text-secondary);">หน่วยการแสดงผล (View
+            Mode):</span>
+          <div class="jp-metric-toggle"
+            style="display: inline-flex; background: var(--bg-card-subtle); border: 1.5px solid var(--border-color); border-radius: 8px; padding: 2px;">
+            <button class="btn btn-sm active" id="btn-mode-R" onclick="setJournalMetricMode('R')"
+              style="padding: 4px 14px; font-size: 12px; font-weight: 700; border-radius: 6px;">
+              🎯 R Multiple
+            </button>
+            <button class="btn btn-sm" id="btn-mode-MONEY" onclick="setJournalMetricMode('MONEY')"
+              style="padding: 4px 14px; font-size: 12px; font-weight: 700; border-radius: 6px; background: transparent; border: none; box-shadow: none;">
+              💵 จำนวนเงิน (Amount)
+            </button>
+            <button class="btn btn-sm" id="btn-mode-PERCENT" onclick="setJournalMetricMode('PERCENT')"
+              style="padding: 4px 14px; font-size: 12px; font-weight: 700; border-radius: 6px; background: transparent; border: none; box-shadow: none;">
+              📈 เปอร์เซ็นต์ (%)
+            </button>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;" id="jp-view-mode-hint">
+          แสดงผลทุกการ์ด, กราฟ, และปฏิทินเป็นค่า: <strong style="color: var(--dime-blue);">R Multiple</strong>
+        </div>
+      </div>
+
+      <!-- 2. Six Executive KPI Cards -->
+      <div class="jp-kpi-grid">
+        <div class="card" style="padding: 16px;">
+          <div class="card-title">เงินในพอร์ตปัจจุบัน (Balance)</div>
+          <div class="card-value jp-num" style="color: var(--dime-blue);" id="jp-kpi-balance">$1,000.00</div>
+          <div class="card-sub" id="jp-kpi-pnl">Net P/L: $0.00</div>
+        </div>
+
+        <div class="card" style="padding: 16px;">
+          <div class="card-title" id="jp-kpi-ret-title">ผลตอบแทนรวม (Total R)</div>
+          <div class="card-value jp-num" style="color: var(--dime-green);" id="jp-kpi-total-r">+0.00 R</div>
+          <div class="card-sub" id="jp-kpi-total-r-sub">ผลตอบแทนสะสมคิดเป็น R</div>
+        </div>
+
+        <div class="card" style="padding: 16px;">
+          <div class="card-title">WIN RATE (อัตราชนะ)</div>
+          <div class="card-value jp-num" style="color: var(--dime-green);" id="jp-kpi-winrate">0.0%</div>
+          <div class="card-sub" id="jp-kpi-wr-sub">0 Wins / 0 Losses</div>
+        </div>
+
+        <div class="card" style="padding: 16px;">
+          <div class="card-title">จำนวน TRADES ทั้งหมด</div>
+          <div class="card-value jp-num" id="jp-kpi-trades">0</div>
+          <div class="card-sub" id="jp-kpi-trades-sub">ออเดอร์ที่ปิดและประเมินแล้ว</div>
+        </div>
+
+        <div class="card" style="padding: 16px;">
+          <div class="card-title" id="jp-kpi-avgw-title">เฉลี่ยชนะ (Avg Win R)</div>
+          <div class="card-value jp-num" style="color: var(--dime-green);" id="jp-kpi-avg-win">+0.00 R</div>
+          <div class="card-sub" id="jp-kpi-avgw-sub">Reward เฉลี่ยต่อไม้ที่ชนะ</div>
+        </div>
+
+        <div class="card" style="padding: 16px;">
+          <div class="card-title" id="jp-kpi-avgl-title">เฉลี่ยแพ้ (Avg Loss R)</div>
+          <div class="card-value jp-num" style="color: var(--dime-red);" id="jp-kpi-avg-loss">-0.00 R</div>
+          <div class="card-sub" id="jp-kpi-avgl-sub">การคุมความเสี่ยงเมื่อพลาด</div>
+        </div>
+      </div>
+
+      <!-- 3. Performance Visualizations: Cumulative R Curve & Monthly Performance -->
+      <div class="grid-2col" style="margin-bottom: 20px;">
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--text-primary);">การเติบโตของผลงาน (Cumulative R
+              Curve)</h3>
+            <span style="font-size: 12px; color: var(--text-muted);">Trade-by-Trade Performance</span>
+          </div>
+          <div style="height: 250px; width: 100%; position: relative;">
+            <canvas id="jp-cumulative-canvas" style="width: 100%; height: 100%;"></canvas>
+          </div>
+        </div>
+
+        <div class="card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--text-primary);">ผลงาน R ในแต่ละเดือน (Monthly R)
+            </h3>
+            <span style="font-size: 12px; color: var(--text-muted);">2026 Breakdown</span>
+          </div>
+          <div style="height: 250px; width: 100%; position: relative;">
+            <canvas id="jp-monthly-canvas" style="width: 100%; height: 100%;"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Setup Breakdown & Quick Stats -->
+      <div class="grid-2col" style="margin-bottom: 20px;">
+        <!-- Setup Breakdown Matrix -->
+        <div class="card" style="padding: 0; overflow: hidden;">
+          <div
+            style="padding: 14px 18px; border-bottom: 1px solid var(--border-color); background: #fafbfc; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 14px; font-weight: 800; color: var(--text-primary);">SETUP BREAKDOWN
+              (ประสิทธิภาพแยกตามกลยุทธ์)</h3>
+            <span style="font-size: 11.5px; color: var(--text-muted);">Ranked by Total R</span>
+          </div>
+          <div class="table-responsive" style="max-height: 260px; overflow-y: auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>SETUP</th>
+                  <th style="text-align: center;">TRADES</th>
+                  <th style="text-align: center;">WIN RATE</th>
+                  <th style="text-align: right;">AVG R</th>
+                  <th style="text-align: right;">TOTAL R</th>
+                </tr>
+              </thead>
+              <tbody id="jp-setup-table-body">
+                <tr>
+                  <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 20px;">ยังไม่มีข้อมูล
+                    Setup</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Quick Stats Grid -->
+        <div class="card">
+          <div style="padding-bottom: 12px; border-bottom: 1px solid var(--border-color); margin-bottom: 14px;">
+            <h3 style="font-size: 14px; font-weight: 800; color: var(--text-primary);">QUICK STATS (สถิติเชิงลึก)</h3>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+            <div style="background: var(--bg-card-subtle); padding: 14px; border-radius: var(--radius-md);">
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">BEST
+                TRADE</div>
+              <div class="jp-num" style="font-size: 20px; font-weight: 800; color: var(--dime-green); margin-top: 4px;"
+                id="jp-stat-best-trade">-</div>
+              <div style="font-size: 11px; color: var(--text-secondary);">R สูงสุดใน 1 ไม้</div>
+            </div>
+            <div style="background: var(--bg-card-subtle); padding: 14px; border-radius: var(--radius-md);">
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">WORST
+                TRADE</div>
+              <div class="jp-num" style="font-size: 20px; font-weight: 800; color: var(--dime-red); margin-top: 4px;"
+                id="jp-stat-worst-trade">-</div>
+              <div style="font-size: 11px; color: var(--text-secondary);">Drawdown สูงสุดใน 1 ไม้</div>
+            </div>
+            <div style="background: var(--bg-card-subtle); padding: 14px; border-radius: var(--radius-md);">
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">BEST
+                MONTH</div>
+              <div style="font-size: 18px; font-weight: 800; color: var(--dime-blue); margin-top: 4px;"
+                id="jp-stat-best-month">-</div>
+              <div style="font-size: 11px; color: var(--text-secondary);">เดือนที่ผลงานโดดเด่นที่สุด</div>
+            </div>
+            <div style="background: var(--bg-card-subtle); padding: 14px; border-radius: var(--radius-md);">
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">R
+                เฉลี่ย / เทรด (EXPECTANCY)</div>
+              <div class="jp-num" style="font-size: 20px; font-weight: 800; color: var(--dime-purple); margin-top: 4px;"
+                id="jp-stat-expectancy">-</div>
+              <div style="font-size: 11px; color: var(--text-secondary);">ความคุ้มค่าเฉลี่ยต่อการออกไม้</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. Consistency Calendar Heatmap -->
+      <div class="jp-calendar-wrapper">
+        <div class="jp-calendar-header">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--text-primary); margin: 0;">CALENDAR 2026 —
+              ผลงานรายวัน (Daily R Heatmap)</h3>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">แสดงความสม่ำเสมอและผลรวม R
+              ประจำวันของพอร์ตที่เลือก</div>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <label style="font-size: 12px; font-weight: 600; color: var(--text-secondary);">เลือกเดือน:</label>
+            <select id="jp-calendar-month-select" onchange="onCalendarMonthChanged()"
+              style="padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 6px; border: 1px solid var(--border-color); background: #fff;">
+              <option value="1">มกราคม (Jan 2026)</option>
+              <option value="2">กุมภาพันธ์ (Feb 2026)</option>
+              <option value="3">มีนาคม (Mar 2026)</option>
+              <option value="4">เมษายน (Apr 2026)</option>
+              <option value="5">พฤษภาคม (May 2026)</option>
+              <option value="6">มิถุนายน (Jun 2026)</option>
+              <option value="7">กรกฎาคม (Jul 2026)</option>
+              <option value="8">สิงหาคม (Aug 2026)</option>
+              <option value="9">กันยายน (Sep 2026)</option>
+              <option value="10">ตุลาคม (Oct 2026)</option>
+              <option value="11">พฤศจิกายน (Nov 2026)</option>
+              <option value="12">ธันวาคม (Dec 2026)</option>
+            </select>
+            <button type="button" id="jp-cal-latest-btn" onclick="goToLatestCalendarDate(true)"
+              class="btn-secondary"
+              style="padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;"
+              title="ไปยังเดือนและวันที่มีการเทรดล่าสุด">
+              📅 วันที่ล่าสุด
+            </button>
+            <span class="pill" id="jp-cal-month-total-pill"
+              style="background: var(--dime-green-bg); color: var(--dime-green);">MONTH: +0.0 R</span>
+          </div>
+        </div>
+
+        <div class="jp-calendar-grid" id="jp-calendar-grid">
+          <!-- Populated dynamically: 7 cols Mon-Sun -->
+        </div>
+      </div>
+
+      <!-- 6. Trade History Log Table -->
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div
+          style="padding: 14px 18px; border-bottom: 1px solid var(--border-color); background: #fafbfc; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 800; color: var(--text-primary); margin: 0;">TRADE LOG
+              (ประวัติการเทรดของพอร์ตนี้)</h3>
+            <div style="font-size: 11.5px; color: var(--text-muted);">ข้อมูลบันทึกอิสระเฉพาะพอร์ตที่เลือก
+              ไม่นำข้อมูลพอร์ตอื่นมารวม</div>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <select id="jp-filter-outcome" onchange="loadJournalTrades()"
+              style="font-size: 11.5px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border-color);">
+              <option value="">ทั้งหมด (All Outcomes)</option>
+              <option value="W">ชนะ (Win)</option>
+              <option value="L">แพ้ (Loss)</option>
+              <option value="BE">เสมอ (BE)</option>
+            </select>
+            <input type="text" id="jp-filter-symbol" placeholder="ค้นหา Symbol..." oninput="loadJournalTrades()"
+              style="font-size: 11.5px; padding: 4px 8px; width: 120px; border-radius: 6px; border: 1px solid var(--border-color);">
+            <button class="btn btn-sm" onclick="loadJournalTrades()">🔄 รีเฟรช</button>
+          </div>
+        </div>
+
+        <div class="table-responsive" style="max-height: 480px; overflow-y: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 45px;">#</th>
+                <th style="width: 85px;">Ticket</th>
+                <th>วันที่ / เวลา</th>
+                <th>Symbol</th>
+                <th>ทิศทาง</th>
+                <th>Setup</th>
+                <th style="text-align: right;" id="jp-th-risk">Risk</th>
+                <th style="text-align: right;" id="jp-th-pnl">Total P/L</th>
+                <th style="text-align: right;">R</th>
+                <th style="text-align: right;">R สะสม</th>
+                <th style="text-align: center;">W/L</th>
+                <th>Chart / Note</th>
+                <th style="text-align: center; width: 60px;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="jp-trades-table-body">
+              <tr>
+                <td colspan="12" style="text-align: center; color: var(--text-muted); padding: 30px;">
+                  กำลังโหลดประวัติการเทรด...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- TWO-STEP ORDER CONFIRMATION MODAL -->
+  <div id="order-confirm-modal"
+    style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); padding: 16px; overflow-y: auto;">
+    <div class="card"
+      style="width: 480px; max-width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-lg); border-radius: var(--radius-lg); padding: 26px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="font-size: 17px; font-weight: 800; color: var(--text-primary);">Two-Step Order Confirmation</h3>
+        <button class="btn" style="padding: 2px 8px;" onclick="closeTwoStepModal()">✕</button>
+      </div>
+      <p style="font-size: 12.5px; color: var(--text-secondary); margin-bottom: 18px;">
+        Please review the risk parameters and contract specifications before transmitting this order to MT5 Exness Demo:
+      </p>
+
+      <div
+        style="background: var(--bg-card-subtle); border-radius: var(--radius-md); padding: 16px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-secondary);">Asset Symbol:</span>
+          <strong id="modal-symbol" style="font-size: 14px;">AAPL</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-secondary);">Order Direction:</span>
+          <strong id="modal-direction" style="color: var(--dime-green);">BUY (LONG)</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-secondary);">Contract Volume:</span>
+          <strong id="modal-volume">0.01 Lot (1 share)</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-secondary);">Entry Price:</span>
+          <strong id="modal-entry">$0.00</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-secondary);">Verified Hard Stop Loss:</span>
+          <strong id="modal-sl" style="color: var(--dime-red);">$0.00</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-secondary);">Take Profit Target:</span>
+          <strong id="modal-tp" style="color: var(--dime-green);">$0.00</strong>
+        </div>
+        <div
+          style="display: flex; justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--border-color);">
+          <span style="color: var(--text-secondary);">Risk Budget Allocation:</span>
+          <strong id="modal-risk-thb" style="color: var(--dime-purple);">~52.50 THB (1.75%)</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-secondary);">Leverage Utilization:</span>
+          <strong id="modal-leverage">1:2.40 (Max Cap: 1:5)</strong>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px;">
+        <button class="btn" style="flex: 1; padding: 11px; justify-content: center;"
+          onclick="closeTwoStepModal()">Cancel</button>
+        <button class="btn btn-success" style="flex: 1.5; padding: 11px; justify-content: center;"
+          id="btn-confirm-send-order" onclick="confirmAndSendOrderToMT5()">
+          ✓ Confirm & Send to MT5
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: RECORD JOURNAL TRADE -->
+  <div id="modal-record-trade"
+    style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); padding: 16px; overflow-y: auto;">
+    <div class="card"
+      style="width: 520px; max-width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-lg); border-radius: var(--radius-lg); padding: 24px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="font-size: 16px; font-weight: 800; color: var(--text-primary);">+ บันทึกผลการเทรด (Record Trade)</h3>
+        <button class="btn" style="padding: 2px 8px;" onclick="closeRecordTradeModal()">✕</button>
+      </div>
+
+      <form onsubmit="handleSaveJournalTrade(event)" style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">วันที่เข้าเทรด</label>
+            <input type="date" id="trade-in-date" style="width: 100%;" required>
+          </div>
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Symbol
+              (คู่เงิน/หุ้น)</label>
+            <input type="text" id="trade-in-symbol" placeholder="เช่น XAUUSD, EURUSD" style="width: 100%;" required>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">ทิศทาง
+              (Direction)</label>
+            <select id="trade-in-direction" style="width: 100%;">
+              <option value="BUY">🟢 BUY (LONG)</option>
+              <option value="SELL">🔴 SELL (SHORT)</option>
+            </select>
+          </div>
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Setup
+              / Playbook</label>
+            <input type="text" id="trade-in-setup" placeholder="เช่น Playbook 1 (Breakout Retest)" style="width: 100%;">
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Risk
+              ($)</label>
+            <input type="number" step="0.01" id="trade-in-risk" placeholder="10.00" style="width: 100%;" required>
+          </div>
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Total
+              P/L ($)</label>
+            <input type="number" step="0.01" id="trade-in-pnl" placeholder="เช่น 25.0 หรือ -10.0" style="width: 100%;"
+              required>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">R
+              Multiple (เว้นว่างเพื่อคำนวณอัตโนมัติ)</label>
+            <input type="number" step="0.01" id="trade-in-r" placeholder="เช่น 2.5" style="width: 100%;">
+          </div>
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">สถานะ
+              (Outcome)</label>
+            <select id="trade-in-outcome" style="width: 100%;">
+              <option value="">อัตโนมัติ (ตามค่า R)</option>
+              <option value="W">W (Win)</option>
+              <option value="L">L (Loss)</option>
+              <option value="BE">BE (Break-Even)</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label
+            style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">TradingView
+            Chart Link (URL)</label>
+          <input type="url" id="trade-in-tv" placeholder="https://www.tradingview.com/x/..." style="width: 100%;">
+        </div>
+
+        <div>
+          <label
+            style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">บันทึกอารมณ์
+            / คอมเมนต์ (Comment / Review)</label>
+          <textarea id="trade-in-comment" rows="2" placeholder="จดบันทึกเหตุผลการเข้า, อารมณ์, หรือข้อผิดพลาด..."
+            style="width: 100%;"></textarea>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 8px;">
+          <button type="button" class="btn" style="flex: 1;" onclick="closeRecordTradeModal()">ยกเลิก</button>
+          <button type="submit" class="btn btn-success" style="flex: 1.5; font-weight: 800;">✓ บันทึกไม้เทรด</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: CREATE NEW PORTFOLIO -->
+  <div id="modal-new-portfolio"
+    style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); padding: 16px; overflow-y: auto;">
+    <div class="card"
+      style="width: 460px; max-width: 100%; box-shadow: var(--shadow-lg); border-radius: var(--radius-lg); padding: 24px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="font-size: 16px; font-weight: 800; color: var(--text-primary);">+ สร้างพอร์ตโฟลิโอใหม่</h3>
+        <button class="btn" style="padding: 2px 8px;" onclick="closeNewPortfolioModal()">✕</button>
+      </div>
+
+      <form onsubmit="handleCreatePortfolio(event)" style="display: flex; flex-direction: column; gap: 12px;">
+        <div>
+          <label
+            style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">Portfolio
+            ID (รหัสอ้างอิงภาษาอังกฤษ)</label>
+          <input type="text" id="port-in-id" placeholder="เช่น port_gold_swing, port_scalp" style="width: 100%;"
+            required>
+        </div>
+
+        <div>
+          <label
+            style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">ชื่อพอร์ตโฟลิโอ
+            (Display Name)</label>
+          <input type="text" id="port-in-name" placeholder="เช่น พอร์ตทองคำ Swing Trade" style="width: 100%;" required>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">เงินต้นเริ่มต้น
+              ($)</label>
+            <input type="number" step="any" id="port-in-cap" value="1000" style="width: 100%;" required>
+          </div>
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">ความเสี่ยงต่อไม้
+              (%)</label>
+            <input type="number" step="0.1" id="port-in-risk" value="1.0" style="width: 100%;" required>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">สกุลเงิน</label>
+            <select id="port-in-curr" style="width: 100%;">
+              <option value="USC">USC (Cent ¢)</option>
+              <option value="USD">USD ($)</option>
+              <option value="THB">THB (฿)</option>
+            </select>
+          </div>
+          <div>
+            <label
+              style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">MT5
+              Account Login (ถ้ามี)</label>
+            <input type="text" id="port-in-acc" placeholder="เช่น 12345678" style="width: 100%;">
+          </div>
+        </div>
+
+        <div>
+          <label
+            style="font-size: 11.5px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 4px;">คำอธิบายพอร์ต
+            / กฎการเทรด</label>
+          <textarea id="port-in-desc" rows="2"
+            placeholder="บันทึกวัตถุประสงค์ เช่น พอร์ตสอบ Prop Firm, พอร์ตเงินจริง..." style="width: 100%;"></textarea>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 8px;">
+          <button type="button" class="btn" style="flex: 1;" onclick="closeNewPortfolioModal()">ยกเลิก</button>
+          <button type="submit" class="btn btn-success" style="flex: 1.5; font-weight: 800;">✓ สร้างพอร์ต</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js?v=20261123_scroll"></script>
+</body>
+
+</html>
