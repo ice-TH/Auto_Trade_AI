@@ -111,7 +111,7 @@ def scan_btc_scalp() -> Dict[str, Any]:
     except ImportError:
         return {"error": "BTC scalper module is not installed or has been removed."}
 
-def scan_gold_strategy(manage_limits: bool = False, manage_positions: bool = True) -> Dict[str, Any]:
+def scan_gold_strategy(manage_limits: bool = True, manage_positions: bool = True, auto_execute_market: bool = False) -> Dict[str, Any]:
     """Experimental Multi-Timeframe Demand & Supply strategy for XAUUSD."""
     try:
         from src.analysis.gold_strategy import scan_gold_setup
@@ -134,12 +134,51 @@ def scan_gold_strategy(manage_limits: bool = False, manage_positions: bool = Tru
                 res["limit_manager"] = limit_res
             except Exception as e:
                 res["limit_manager"] = {"error": str(e)}
+
+        # 3. Auto Execute Valid Market Order if Authorized and Trigger Met
+        if auto_execute_market and "error" not in res:
+            status = res.get("status", "")
+            direction = res.get("recommended_direction", "NEUTRAL")
+            entry = res.get("recommended_entry", 0.0)
+            sl = res.get("recommended_sl", 0.0)
+            tp = res.get("recommended_tp", 0.0)
+            sym = res.get("mt5_symbol") or res.get("symbol", "XAUUSDc")
+            
+            # Actionable market entry setups
+            actionable_market_statuses = [
+                "BUY_DEMAND_ZONE",
+                "SELL_SUPPLY_ZONE",
+                "BUY_ROLE_REVERSAL_RETEST",
+                "SELL_ROLE_REVERSAL_RETEST"
+            ]
+            
+            if status in actionable_market_statuses and direction in ("BUY", "SELL"):
+                # Check if we already have an open position on this symbol to prevent stacking
+                cli = mt5_client
+                cli.connect()
+                open_pos = [p for p in cli.get_open_positions() if sym in p.get("symbol", "")]
+                if len(open_pos) == 0:
+                    current_login = cli.account_info.get("login") if cli.account_info else None
+                    trade_vol = 0.06 if current_login == 160219615 else 0.01
+                    exec_comment = f"AutoGold [{status}]"
+                    order_res = cli.send_order(
+                        symbol=sym,
+                        direction=direction,
+                        volume=trade_vol,
+                        sl_price=sl,
+                        tp_price=tp,
+                        comment=exec_comment
+                    )
+                    res["auto_market_execution"] = order_res
+                else:
+                    res["auto_market_execution"] = {"status": "SKIPPED_ALREADY_OPEN", "open_positions": len(open_pos)}
+
         return res
     except ImportError as e:
         return {"error": f"Gold strategy module error: {e}"}
 
-def run_gold_loop(interval_sec: float = 90.0, max_iterations: int = 0):
-    """Continuous runner for Gold analysis & limit management."""
+def run_gold_loop(interval_sec: float = 60.0, max_iterations: int = 0, auto_execute_market: bool = True):
+    """Continuous runner for Gold analysis & limit management & auto order execution."""
     import time
     from datetime import datetime
     iteration = 0
@@ -148,19 +187,20 @@ def run_gold_loop(interval_sec: float = 90.0, max_iterations: int = 0):
     acc_desc = f"{login} (Real Cent USC)" if is_cent else f"{login} (Demo Sandbox)"
     print(f"================================================================================")
     print(f"  XAU/USD Smart Automation Loop (Interval: {interval_sec}s / {interval_sec/60:.2f}m)")
-    print(f"  Target Account: {acc_desc} | Dead Man's Switch: TTL 10m")
+    print(f"  Target Account: {acc_desc} | Auto Market Order: {auto_execute_market}")
     print(f"================================================================================")
     try:
         while True:
             iteration += 1
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"\n[{now_str}] --- Iteration #{iteration} ---")
-            res = scan_gold_strategy(manage_limits=True, manage_positions=True)
+            res = scan_gold_strategy(manage_limits=True, manage_positions=True, auto_execute_market=auto_execute_market)
             status = res.get("status", "UNKNOWN")
             price = res.get("current_price", 0.0)
             spread = res.get("spread", 0.0)
             limits = res.get("limit_manager", {})
             positions = res.get("position_manager", {})
+            auto_exec = res.get("auto_market_execution")
             pos_actions = positions.get("actions_taken", [])
             actions = limits.get("actions_taken", [])
             pending_count = limits.get("active_pending_count", 0)
@@ -172,8 +212,10 @@ def run_gold_loop(interval_sec: float = 90.0, max_iterations: int = 0):
             if actions:
                 for a in actions:
                     print(f"  -> Limit Action: {a}")
-            if not actions and not pos_actions:
-                print("  -> Actions: No order change needed (positions safe, waiting for zone).")
+            if auto_exec:
+                print(f"  -> Auto Market Order: {auto_exec}")
+            if not actions and not pos_actions and not auto_exec:
+                print("  -> Actions: No order change needed (positions safe, waiting for zone/trigger).")
             
             if max_iterations > 0 and iteration >= max_iterations:
                 print(f"\nCompleted max iterations ({max_iterations}). Exiting loop.")
@@ -191,7 +233,8 @@ if __name__ == "__main__":
     parser.add_argument("--sl", type=float, default=0.0)
     parser.add_argument("--tp", type=float, default=0.0)
     parser.add_argument("--ticket", type=int, default=0)
-    parser.add_argument("--manage-limits", action="store_true", default=False)
+    parser.add_argument("--manage-limits", action="store_true", default=True)
+    parser.add_argument("--auto-execute-market", action="store_true", default=False)
     parser.add_argument("--interval", type=float, default=90.0)
     parser.add_argument("--iterations", type=int, default=0)
 
@@ -217,7 +260,7 @@ if __name__ == "__main__":
         res = scan_btc_scalp()
         print(json.dumps(res, indent=2))
     elif args.action == "gold-strategy":
-        res = scan_gold_strategy(manage_limits=args.manage_limits)
+        res = scan_gold_strategy(manage_limits=args.manage_limits, auto_execute_market=args.auto_execute_market)
         print(json.dumps(res, indent=2))
     elif args.action == "gold-loop":
-        run_gold_loop(interval_sec=args.interval, max_iterations=args.iterations)
+        run_gold_loop(interval_sec=args.interval, max_iterations=args.iterations, auto_execute_market=args.auto_execute_market)

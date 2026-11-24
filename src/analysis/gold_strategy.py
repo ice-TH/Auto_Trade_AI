@@ -616,20 +616,6 @@ def scan_gold_setup() -> Dict[str, Any]:
             reward_usd = target_tp - target_entry
             rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
             setup_reason = f"⚠️ ปฏิเสธ BUY ที่ Demand: แท่งเทียนกำลังทิ้งตัวรุนแรง (Falling Knife) บังคับรอแท่ง Rejection Wick ยืนยันก่อน"
-        elif not has_rejection:
-            setup_type = "WAITING_FOR_REJECTION"
-            direction = "NEUTRAL"
-            target_entry = current_price
-            target_sl = nearest_demand["zone_low"] - (current_atr * 0.75)
-            target_tp = current_price + (current_atr * 2.0)
-            risk_usd = target_entry - target_sl
-            reward_usd = target_tp - target_entry
-            rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
-            setup_reason = (
-                f"⏳ ราคาสัมผัส Demand Zone ({nearest_demand['zone_low']:.2f} - {nearest_demand['zone_high']:.2f}) "
-                f"กำลังรอแท่งเทียน M5/15m เกิด Rejection Wick ยืนยัน (หางล่าง M5: {rejection_5m_ratio*100:.1f}%, 15m: {rejection_15m_ratio*100:.1f}% < 25%) "
-                f"เพื่อป้องกันการรับมีดตก [XAU-RULE-06]"
-            )
         elif headroom < (current_atr * 1.0):
             setup_type = "REJECTED_NEAR_RESISTANCE"
             direction = "NEUTRAL"
@@ -665,7 +651,34 @@ def scan_gold_setup() -> Dict[str, Any]:
             reward_usd = target_tp - current_price
             rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
 
-            if sl_distance > MAX_GOLD_SL_USD:
+            # 🎯 Option 2 (Dynamic Limit): If market entry is too wide or no rejection wick yet, activate Smart Limit Order at Fibo 65% OTE
+            limit_entry_candidate = best_fibo.get("fibo_650") or nearest_demand.get("zone_mid") or (nearest_demand["zone_low"] + current_atr * 0.25)
+            limit_entry = min(max(limit_entry_candidate, nearest_demand["zone_low"]), nearest_demand["zone_high"])
+            limit_sl_dist = limit_entry - raw_sl
+            limit_rew_dist = target_tp - limit_entry
+            limit_rr = (limit_rew_dist / limit_sl_dist) if limit_sl_dist > 0 else 0.0
+
+            if has_rejection and not is_chasing_above_zone and not is_asian_session and sl_distance <= MAX_GOLD_SL_USD and rr_ratio >= MIN_GOLD_RR_RATIO:
+                target_entry = current_price
+                target_sl = raw_sl
+                order_execution_mode = "MARKET"
+                setup_type = "BUY_DEMAND_ZONE"
+                direction = "BUY"
+                setup_reason = f"ราคาแตะโซน Demand ({nearest_demand['pattern']}) ชิดฐานที่ {nearest_demand['zone_low']} - {nearest_demand['zone_high']} ยืนยันด้วยแท่งเทียน {trigger_tf} พร้อม R:R {rr_ratio:.2f} (Headroom ปลอดภัย {headroom:.2f})"
+            elif limit_sl_dist <= MAX_GOLD_SL_USD and limit_rr >= MIN_GOLD_RR_RATIO:
+                target_entry = round(limit_entry, 2)
+                target_sl = round(raw_sl, 2)
+                order_execution_mode = "LIMIT"
+                setup_type = "ACTIONABLE_BUY_LIMIT"
+                direction = "BUY"
+                risk_usd = limit_sl_dist
+                reward_usd = limit_rew_dist
+                rr_ratio = limit_rr
+                setup_reason = (
+                    f"🎯 แนะนำ Buy Limit ดักย่อที่ Fibo 65% OTE / Demand Base (${target_entry:.2f}) SL ${target_sl:.2f} (R:R {rr_ratio:.2f}) "
+                    f"[Option 2: Dynamic Limit Pre-placement - [XAU-RULE-23]]"
+                )
+            elif sl_distance > MAX_GOLD_SL_USD:
                 setup_type = "REJECTED_SL_TOO_WIDE"
                 direction = "NEUTRAL"
                 target_entry = current_price
@@ -674,43 +687,15 @@ def scan_gold_setup() -> Dict[str, Any]:
                     f"⚠️ ปฏิเสธ BUY: ระยะ Stop Loss กว้างเกินเกณฑ์ (${sl_distance:.2f} > ${MAX_GOLD_SL_USD:.2f}) "
                     f"เสี่ยงเกินขนาดสำหรับ Intraday Scalp รอราคาย่อตัวลึกเข้าเนื้อ Demand Zone (${nearest_demand['zone_low']:.2f} - ${nearest_demand['zone_high']:.2f})"
                 )
-            elif rr_ratio < MIN_GOLD_RR_RATIO:
+            else:
                 setup_type = "REJECTED_POOR_RR"
                 direction = "NEUTRAL"
                 target_entry = current_price
                 target_sl = raw_sl
-                pullback_entry = min(nearest_demand["zone_high"], target_tp - (risk_usd * MIN_GOLD_RR_RATIO))
-                pullback_entry_recommended = round(pullback_entry, 2)
                 setup_reason = (
-                    f"⚠️ ปฏิเสธ BUY: Risk:Reward ต่ำเกินไป (R:R {rr_ratio:.2f} < {MIN_GOLD_RR_RATIO:.2f} | เสี่ยง ${risk_usd:.2f} เพื่อกำไร ${reward_usd:.2f}) "
+                    f"⚠️ ปฏิเสธ BUY: Risk:Reward ต่ำเกินไป (R:R {rr_ratio:.2f} < {MIN_GOLD_RR_RATIO:.2f}) "
                     f"ห้ามไล่ราคา ควรรอย่อ Pullback เข้าเนื้อ Demand Zone ({nearest_demand['zone_low']:.2f} - {nearest_demand['zone_high']:.2f})"
                 )
-            elif is_chasing_above_zone or is_asian_session:
-                # 🎯 Systematic Pullback / Limit Order: Do NOT chase at highs, enter at Fibo 65% OTE or Base Midpoint
-                limit_entry_candidate = best_fibo.get("fibo_650") or nearest_demand.get("zone_mid") or (nearest_demand["zone_low"] + current_atr * 0.25)
-                limit_entry = min(max(limit_entry_candidate, nearest_demand["zone_low"]), nearest_demand["zone_high"])
-                target_entry = round(limit_entry, 2)
-                target_sl = round(raw_sl, 2)
-                order_execution_mode = "LIMIT"
-
-                risk_usd = target_entry - target_sl
-                reward_usd = target_tp - target_entry
-                rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
-
-                setup_type = "ACTIONABLE_BUY_LIMIT"
-                direction = "BUY"
-                session_note = "ช่วงตลาดเอเชีย สภาพคล่องเบาบาง ป้องกัน Stop Hunt" if is_asian_session else f"ราคาเด้งพ้นฐาน > 0.4x ATR ป้องกันการไล่ซื้อยอดเด้ง"
-                setup_reason = (
-                    f"🎯 แนะนำ Buy Limit ดักย่อที่ Fibo 65% OTE / Demand Base (${target_entry:.2f}) SL ${target_sl:.2f} (R:R {rr_ratio:.2f}) "
-                    f"[{session_note} - [XAU-RULE-21]]"
-                )
-            else:
-                target_entry = current_price
-                target_sl = raw_sl
-                order_execution_mode = "MARKET"
-                setup_type = "BUY_DEMAND_ZONE"
-                direction = "BUY"
-                setup_reason = f"ราคาแตะโซน Demand ({nearest_demand['pattern']}) ชิดฐานที่ {nearest_demand['zone_low']} - {nearest_demand['zone_high']} ยืนยันด้วยแท่งเทียน {trigger_tf} พร้อม R:R {rr_ratio:.2f} (Headroom ปลอดภัย {headroom:.2f})"
 
     # Check Supply Proximity (Strict: Price touches or penetrates Base, max 0.35x ATR below zone_low)
     # Headroom & Support Filter: Never SELL if too close to underneath demand/support
@@ -789,20 +774,6 @@ def scan_gold_setup() -> Dict[str, Any]:
                 f"⚠️ ปฏิเสธ SELL: พื้นที่ลงแคบเกินไป (Headroom {effective_down_headroom:.2f} < {min_required_headroom:.2f} [1.5x ATR]) "
                 f"ราคาอยู่ชิดแนวรับ/Low วัน ({effective_support_floor:.2f}) ห้ามขายก้นเหวเด็ดขาด เสี่ยงโดนดีดสวน"
             )
-        elif not has_rejection:
-            setup_type = "WAITING_FOR_REJECTION"
-            direction = "NEUTRAL"
-            target_entry = current_price
-            target_sl = nearest_supply["zone_high"] + (current_atr * 0.75)
-            target_tp = current_price - (current_atr * 2.0)
-            risk_usd = target_sl - target_entry
-            reward_usd = target_entry - target_tp
-            rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
-            setup_reason = (
-                f"⏳ ราคาสัมผัส Supply Zone ({nearest_supply['zone_low']:.2f} - {nearest_supply['zone_high']:.2f}) "
-                f"กำลังรอแท่งเทียน M5/15m เกิด Rejection Wick ยืนยัน (หางบน M5: {rejection_5m_ratio*100:.1f}%, 15m: {rejection_15m_ratio*100:.1f}% < 25%) "
-                f"เพื่อป้องกันการขายสวนแรงส่ง [XAU-RULE-06]"
-            )
         else:
             raw_sl = nearest_supply["zone_high"] + (current_atr * 0.75)  # Moat buffer above base
             below_demands = [d for d in demands if d["zone_high"] < current_price]
@@ -828,7 +799,34 @@ def scan_gold_setup() -> Dict[str, Any]:
             reward_usd = current_price - target_tp
             rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
 
-            if sl_distance > MAX_GOLD_SL_USD:
+            # 🎯 Option 2 (Dynamic Limit): If market entry is too wide or no rejection wick yet, activate Smart Limit Order at Fibo 65% OTE
+            limit_entry_candidate = best_fibo.get("fibo_650") or nearest_supply.get("zone_mid") or (nearest_supply["zone_high"] - current_atr * 0.25)
+            limit_entry = max(min(limit_entry_candidate, nearest_supply["zone_high"]), nearest_supply["zone_low"])
+            limit_sl_dist = raw_sl - limit_entry
+            limit_rew_dist = limit_entry - target_tp
+            limit_rr = (limit_rew_dist / limit_sl_dist) if limit_sl_dist > 0 else 0.0
+
+            if has_rejection and not is_chasing_below_zone and not is_asian_session and sl_distance <= MAX_GOLD_SL_USD and rr_ratio >= MIN_GOLD_RR_RATIO:
+                target_entry = current_price
+                target_sl = raw_sl
+                order_execution_mode = "MARKET"
+                setup_type = "SELL_SUPPLY_ZONE"
+                direction = "SELL"
+                setup_reason = f"ราคาแตะโซน Supply ({nearest_supply['pattern']}) ชิดฐานที่ {nearest_supply['zone_low']} - {nearest_supply['zone_high']} ยืนยันด้วยแท่งเทียน {trigger_tf} พร้อม R:R {rr_ratio:.2f}"
+            elif limit_sl_dist <= MAX_GOLD_SL_USD and limit_rr >= MIN_GOLD_RR_RATIO:
+                target_entry = round(limit_entry, 2)
+                target_sl = round(raw_sl, 2)
+                order_execution_mode = "LIMIT"
+                setup_type = "ACTIONABLE_SELL_LIMIT"
+                direction = "SELL"
+                risk_usd = limit_sl_dist
+                reward_usd = limit_rew_dist
+                rr_ratio = limit_rr
+                setup_reason = (
+                    f"🎯 แนะนำ Sell Limit ดักเด้งที่ Fibo 65% OTE / Supply Base (${target_entry:.2f}) SL ${target_sl:.2f} (R:R {rr_ratio:.2f}) "
+                    f"[Option 2: Dynamic Limit Pre-placement - [XAU-RULE-23]]"
+                )
+            elif sl_distance > MAX_GOLD_SL_USD:
                 setup_type = "REJECTED_SL_TOO_WIDE"
                 direction = "NEUTRAL"
                 target_entry = current_price
@@ -837,43 +835,15 @@ def scan_gold_setup() -> Dict[str, Any]:
                     f"⚠️ ปฏิเสธ SELL: ระยะ Stop Loss กว้างเกินเกณฑ์ (${sl_distance:.2f} > ${MAX_GOLD_SL_USD:.2f}) "
                     f"เสี่ยงเกินขนาดสำหรับ Intraday Scalp รอราคาเด้งทดสอบ Supply Zone (${nearest_supply['zone_low']:.2f} - ${nearest_supply['zone_high']:.2f})"
                 )
-            elif rr_ratio < MIN_GOLD_RR_RATIO:
+            else:
                 setup_type = "REJECTED_POOR_RR"
                 direction = "NEUTRAL"
                 target_entry = current_price
                 target_sl = raw_sl
-                pullback_entry = max(nearest_supply["zone_low"], target_tp + (risk_usd * MIN_GOLD_RR_RATIO))
-                pullback_entry_recommended = round(pullback_entry, 2)
                 setup_reason = (
-                    f"⚠️ ปฏิเสธ SELL: Risk:Reward ต่ำเกินไป (R:R {rr_ratio:.2f} < {MIN_GOLD_RR_RATIO:.2f} | เสี่ยง ${risk_usd:.2f} เพื่อกำไร ${reward_usd:.2f}) "
+                    f"⚠️ ปฏิเสธ SELL: Risk:Reward ต่ำเกินไป (R:R {rr_ratio:.2f} < {MIN_GOLD_RR_RATIO:.2f}) "
                     f"ห้ามไล่ราคา ควรรอเด้ง Pullback เข้าเนื้อ Supply Zone ({nearest_supply['zone_low']:.2f} - {nearest_supply['zone_high']:.2f})"
                 )
-            elif is_chasing_below_zone or is_asian_session:
-                # 🎯 Systematic Pullback / Limit Order: Do NOT chase at bottoms, enter at Fibo 65% OTE or Base Midpoint
-                limit_entry_candidate = best_fibo.get("fibo_650") or nearest_supply.get("zone_mid") or (nearest_supply["zone_high"] - current_atr * 0.25)
-                limit_entry = max(min(limit_entry_candidate, nearest_supply["zone_high"]), nearest_supply["zone_low"])
-                target_entry = round(limit_entry, 2)
-                target_sl = round(raw_sl, 2)
-                order_execution_mode = "LIMIT"
-
-                risk_usd = target_sl - target_entry
-                reward_usd = target_entry - target_tp
-                rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
-
-                setup_type = "ACTIONABLE_SELL_LIMIT"
-                direction = "SELL"
-                session_note = "ช่วงตลาดเอเชีย สภาพคล่องเบาบาง ป้องกัน Stop Hunt" if is_asian_session else f"ราคาเด้งลงห่างฐาน > 0.4x ATR ป้องกันการไล่ขายที่ปลายคลื่น"
-                setup_reason = (
-                    f"🎯 แนะนำ Sell Limit ดักเด้งที่ Fibo 65% OTE / Supply Base (${target_entry:.2f}) SL ${target_sl:.2f} (R:R {rr_ratio:.2f}) "
-                    f"[{session_note} - [XAU-RULE-21]]"
-                )
-            else:
-                target_entry = current_price
-                target_sl = raw_sl
-                order_execution_mode = "MARKET"
-                setup_type = "SELL_SUPPLY_ZONE"
-                direction = "SELL"
-                setup_reason = f"ราคาแตะโซน Supply ({nearest_supply['pattern']}) ชิดฐานที่ {nearest_supply['zone_low']} - {nearest_supply['zone_high']} ยืนยันด้วยแท่งเทียน {trigger_tf} พร้อม R:R {rr_ratio:.2f}"
 
     # Check Role Reversal Proximity
     elif role_reversals:
