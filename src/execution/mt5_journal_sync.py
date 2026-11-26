@@ -20,6 +20,23 @@ from src.storage.models import PortfolioModel, JournalTradeModel
 
 logger = logging.getLogger("mt5_journal_sync")
 
+BE_R_THRESHOLD = 0.20
+
+
+def classify_trade_outcome(r_multiple: float) -> str:
+    """Classify trade outcome as W, L, or BE using a ±0.20R breakeven band."""
+    if r_multiple > BE_R_THRESHOLD:
+        return "W"
+    if r_multiple < -BE_R_THRESHOLD:
+        return "L"
+    return "BE"
+
+
+def outcome_to_long_label(outcome: str) -> str:
+    """Convert short journal outcome ('W', 'L', 'BE') to long label ('WIN', 'LOSS', 'BREAKEVEN')."""
+    mapping = {"W": "WIN", "L": "LOSS", "BE": "BREAKEVEN"}
+    return mapping.get(outcome.upper(), "BREAKEVEN")
+
 def get_connected_mt5_account_info() -> Dict[str, Any]:
     """Retrieve connected MT5 account summary or disconnected state."""
     if not MT5_AVAILABLE:
@@ -179,7 +196,7 @@ def sync_mt5_deals_to_portfolio(
             risk_conv = 10.0
 
         r_multiple = round(profit_conv / risk_conv, 2) if risk_conv > 0 else 0.0
-        outcome = "W" if r_multiple > 0.05 else ("L" if r_multiple < -0.05 else "BE")
+        outcome = classify_trade_outcome(r_multiple)
 
         # Determine Setup name from comment or default
         combined_comm = f"{order_comment} {deal.comment or ''}".strip()

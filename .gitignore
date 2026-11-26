@@ -10,6 +10,7 @@
 data_store/*.db
 data_store/*.sqlite
 data_store/*.sqlite3
+memory/news_calendar_cache.json
 
 # Python Caches & Compiled files
 __pycache__/

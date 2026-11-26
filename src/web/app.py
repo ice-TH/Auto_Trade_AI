@@ -1040,12 +1040,8 @@ def create_portfolio_trade(portfolio_id: str, req: JournalTradeCreateReq, db: Se
 
     outcome = req.outcome
     if not outcome:
-        if r_val > 0.05:
-            outcome = "W"
-        elif r_val < -0.05:
-            outcome = "L"
-        else:
-            outcome = "BE"
+        from src.execution.mt5_journal_sync import classify_trade_outcome
+        outcome = classify_trade_outcome(r_val)
 
     count_existing = db.query(JournalTradeModel).filter(JournalTradeModel.portfolio_id == portfolio_id).count()
 

@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from unittest.mock import patch
 from src.risk.news_guard import (
+    get_news_impact_summary,
     is_news_blackout,
     is_rollover_blackout,
     is_spread_acceptable,
@@ -24,26 +26,26 @@ def test_to_bangkok_and_eastern_dst():
 def test_news_blackout_cpi_window_summer_and_winter():
     # Summer CPI at 08:30 EDT = 12:30 UTC (19:30 BKK)
     summer_cpi = datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc)
-    in_summer, reason_s = is_news_blackout(summer_cpi)
+    in_summer, reason_s = is_news_blackout(summer_cpi, use_live_calendar=False)
     assert in_summer is True
     assert "NEWS BLACKOUT" in reason_s
 
     # Winter CPI at 08:30 EST = 13:30 UTC (20:30 BKK)
     winter_cpi = datetime(2026, 11, 23, 13, 30, tzinfo=timezone.utc)
-    in_winter, reason_w = is_news_blackout(winter_cpi)
+    in_winter, reason_w = is_news_blackout(winter_cpi, use_live_calendar=False)
     assert in_winter is True
     assert "NEWS BLACKOUT" in reason_w
 
     # In Winter, 19:30 BKK (12:30 UTC = 07:30 EST) is 1 hour BEFORE CPI -> safe!
     winter_pre_news = datetime(2026, 11, 23, 12, 30, tzinfo=timezone.utc)
-    in_pre, _ = is_news_blackout(winter_pre_news)
+    in_pre, _ = is_news_blackout(winter_pre_news, use_live_calendar=False)
     assert in_pre is False
 
 
 def test_news_blackout_fomc_window():
     # Winter FOMC at 14:15 EST = 19:15 UTC (02:15 BKK next day)
     fomc_time = datetime(2026, 11, 25, 19, 15, tzinfo=timezone.utc)
-    in_news, reason = is_news_blackout(fomc_time)
+    in_news, reason = is_news_blackout(fomc_time, use_live_calendar=False)
     assert in_news is True
     assert "FOMC" in reason
 
@@ -62,12 +64,12 @@ def test_rollover_blackout_window():
 
 def test_news_blackout_quiet_hours_and_weekend():
     quiet_time = datetime(2026, 11, 23, 7, 0, tzinfo=timezone.utc)
-    in_news, reason = is_news_blackout(quiet_time)
+    in_news, reason = is_news_blackout(quiet_time, use_live_calendar=False)
     assert in_news is False
     assert "ปลอดภัย" in reason
 
     weekend_time = datetime(2026, 11, 28, 13, 30, tzinfo=timezone.utc)
-    assert is_news_blackout(weekend_time)[0] is False
+    assert is_news_blackout(weekend_time, use_live_calendar=False)[0] is False
 
 
 def test_spread_acceptable():
@@ -85,3 +87,56 @@ def test_volatility_spike():
     spike, reason = is_volatility_spike(5.00, 2.00, spike_multiplier=1.8)
     assert spike is True
     assert "VOLATILITY SPIKE" in reason
+
+
+def test_live_calendar_red_orange_yellow_and_fallback():
+    mock_events = [
+        {
+            "title": "CPI m/m",
+            "country": "USD",
+            "date": "2026-11-26T08:30:00-05:00",  # 13:30 UTC / 20:30 BKK
+            "impact": "High",
+            "forecast": "0.3%",
+            "previous": "0.2%",
+        },
+        {
+            "title": "Richmond Manufacturing Index",
+            "country": "USD",
+            "date": "2026-11-26T10:00:00-05:00",  # 15:00 UTC / 22:00 BKK
+            "impact": "Medium",
+        },
+        {
+            "title": "German GDP",
+            "country": "EUR",
+            "date": "2026-11-26T02:00:00-05:00",  # 07:00 UTC
+            "impact": "High",
+        },
+    ]
+
+    with patch("src.risk.news_guard.fetch_economic_calendar", return_value=mock_events):
+        # 1. Inside Red (High) USD CPI window (-15m before 13:30 UTC) -> Blackout!
+        in_red, reason_red = is_news_blackout(datetime(2026, 11, 26, 13, 15, tzinfo=timezone.utc))
+        assert in_red is True
+        assert "กล่องแดง" in reason_red
+        assert "CPI m/m" in reason_red
+
+        # 2. Inside Orange (Medium) USD news at 15:00 UTC -> Safe (not Red)
+        in_orange, reason_orange = is_news_blackout(datetime(2026, 11, 26, 15, 0, tzinfo=timezone.utc))
+        assert in_orange is False
+        assert "Live Calendar" in reason_orange
+
+        # 3. Non-USD High news at 07:00 UTC -> Safe for USD/Gold
+        in_eur, _ = is_news_blackout(datetime(2026, 11, 26, 7, 0, tzinfo=timezone.utc))
+        assert in_eur is False
+
+        # 4. Impact summary lists Red & Orange with Thai box labels
+        summary = get_news_impact_summary(datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc), currencies=("USD",))
+        assert len(summary["events"]) == 2
+        assert summary["events"][0]["box_label"] == "กล่องแดง 🔴"
+        assert summary["events"][1]["box_label"] == "กล่องส้ม 🟠"
+
+    # 5. Empty feed -> Falls back to static ET windows
+    with patch("src.risk.news_guard.fetch_economic_calendar", return_value=[]):
+        in_fallback, reason_fb = is_news_blackout(datetime(2026, 11, 26, 13, 30, tzinfo=timezone.utc))
+        assert in_fallback is True
+        assert "ตามตาราง" in reason_fb or "NEWS BLACKOUT" in reason_fb

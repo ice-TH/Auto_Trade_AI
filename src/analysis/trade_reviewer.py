@@ -19,7 +19,8 @@ except ImportError:
 
 from config.settings import settings, BASE_DIR
 from src.storage.database import SessionLocal
-from src.storage.models import TradeHistoryModel
+from src.storage.models import TradeHistoryModel, JournalTradeModel, PortfolioModel
+from src.execution.mt5_journal_sync import classify_trade_outcome, outcome_to_long_label
 
 logger = logging.getLogger("trade_reviewer")
 
@@ -54,22 +55,46 @@ def sync_and_review_all() -> Dict[str, Any]:
     synced_deals = []
     
     try:
+        # Resolve default risk in USD from primary portfolio (fallback to 10.0 USD)
+        default_risk_usd = 10.0
+        primary_port = db.query(PortfolioModel).order_by(PortfolioModel.id.asc()).first()
+        if primary_port and primary_port.initial_capital and primary_port.risk_per_trade_percent:
+            port_risk = primary_port.initial_capital * (primary_port.risk_per_trade_percent / 100.0)
+            if primary_port.currency == "USC":
+                port_risk = port_risk / 100.0
+            elif primary_port.currency == "THB":
+                port_risk = port_risk / 35.0
+            if port_risk > 0:
+                default_risk_usd = round(port_risk, 2)
+
         # Group closing deals (type == 0 or 1 with comment or profit)
         for d in deals:
             # Type: 0 = Buy, 1 = Sell. Check if it represents a trade close or has profit
             if not d.symbol:
                 continue # Skip deposit / credit deals
 
+            # Skip pure entry deals so 0-profit opens are not logged as BREAKEVEN cases
+            deal_entry = getattr(d, "entry", None)
+            if deal_entry is not None and deal_entry not in (1, 2):  # DEAL_ENTRY_OUT=1, DEAL_ENTRY_INOUT=2
+                continue
+
             # Check if deal already in DB
             existing = db.query(TradeHistoryModel).filter(TradeHistoryModel.ticket == d.ticket).first()
             if existing:
                 continue
 
-            raw_profit = float(d.profit)
+            raw_profit = float(d.profit) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
             profit_usd = raw_profit / 100.0 if is_cent else raw_profit
             profit_thb = profit_usd * 35.0
 
-            outcome = "WIN" if raw_profit > 0.05 else ("LOSS" if raw_profit < -0.05 else "BREAKEVEN")
+            # Reuse journal R-multiple if synced, else compute from default portfolio risk
+            journal_match = db.query(JournalTradeModel).filter(JournalTradeModel.mt5_ticket == d.ticket).first()
+            if journal_match and journal_match.r_multiple is not None:
+                r_multiple = float(journal_match.r_multiple)
+            else:
+                r_multiple = round(profit_usd / default_risk_usd, 2) if default_risk_usd > 0 else 0.0
+
+            outcome = outcome_to_long_label(classify_trade_outcome(r_multiple))
             exit_reason = "SL_HIT" if "sl" in str(d.comment).lower() else ("TP_HIT" if "tp" in str(d.comment).lower() else "MANUAL_OR_TARGET")
             
             close_dt = datetime.fromtimestamp(d.time, tz=timezone.utc)
