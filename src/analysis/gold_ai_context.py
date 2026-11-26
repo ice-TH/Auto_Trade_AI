@@ -508,6 +508,232 @@ def extract_fresh_m5_zones(
     }
 
 
+def _zone_has_golden_confluence(
+    zone: Dict[str, Any],
+    fibo_data: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True when a Demand/Supply zone overlaps the Fibo Golden Zone or contains fibo_650/fibo_618."""
+    conf = zone.get("fibo_confluence") or {}
+    if conf.get("has_confluence"):
+        return True
+    if not isinstance(fibo_data, dict):
+        return False
+    zl, zh = float(zone["zone_low"]), float(zone["zone_high"])
+    for key in ("fibo_650", "fibo_618"):
+        val = fibo_data.get(key)
+        if val is not None and zl <= float(val) <= zh:
+            return True
+    return False
+
+
+def _evaluate_zone_limit_candidate(
+    zone: Dict[str, Any],
+    direction: str,
+    curr_price: float,
+    safe_atr: float,
+    moat: float,
+    spread: float,
+    fibo_data: Optional[Dict[str, Any]],
+    opp_zone: Optional[Dict[str, Any]],
+    entry_tier: str,
+    shifted_from_nearest: bool,
+) -> Dict[str, Any]:
+    """Compute a Hard-Risk-Gate-evaluated Limit candidate for a Demand (BUY) or Supply (SELL) zone."""
+    zl, zh = float(zone["zone_low"]), float(zone["zone_high"])
+    width = max(zh - zl, 0.0)
+    zmid = round((zl + zh) / 2.0, 2)
+    conf = zone.get("fibo_confluence") or {}
+    has_conf = _zone_has_golden_confluence(zone, fibo_data)
+    is_double = bool(conf.get("double_confluence", False))
+
+    if entry_tier in ("GOLDEN_ZONE_CONFLUENCE", "NEARBY_GOLDEN_ZONE_SHIFT"):
+        ov_low = float(conf.get("overlap_low", zl))
+        ov_high = float(conf.get("overlap_high", zh))
+        f65 = conf.get("fibo_650") or (fibo_data.get("fibo_650") if isinstance(fibo_data, dict) else None)
+        f618 = fibo_data.get("fibo_618") if isinstance(fibo_data, dict) else None
+        if f65 is not None and ov_low <= float(f65) <= ov_high and zl <= float(f65) <= zh:
+            raw_entry = round(float(f65), 2)
+        elif f618 is not None and ov_low <= float(f618) <= ov_high and zl <= float(f618) <= zh:
+            raw_entry = round(float(f618), 2)
+        elif conf.get("overlap_mid") is not None:
+            raw_entry = round(float(conf["overlap_mid"]), 2)
+        else:
+            raw_entry = zmid
+        confirmation_policy = "IMMEDIATE_LIMIT_RELAXED"
+    else:
+        # Non-confluent zone: place deeper (35% from deep edge, or 25% if Golden Zone sits just outside edge)
+        depth_ratio = 0.35
+        if isinstance(fibo_data, dict) and "golden_zone_high" in fibo_data and "golden_zone_low" in fibo_data:
+            gz_high = max(float(fibo_data["golden_zone_high"]), float(fibo_data["golden_zone_low"]))
+            gz_low = min(float(fibo_data["golden_zone_high"]), float(fibo_data["golden_zone_low"]))
+            edge_dist = abs(zl - gz_high) if direction == "BUY" else abs(gz_low - zh)
+            if edge_dist <= (0.50 * safe_atr):
+                depth_ratio = 0.25
+        raw_entry = round(zl + width * depth_ratio, 2) if direction == "BUY" else round(zh - width * depth_ratio, 2)
+        confirmation_policy = "LIMIT_DEEP_WITH_KNIFE_GUARD"
+
+    if direction == "BUY":
+        sl = round(zl - moat, 2)
+        safe_bound = round(sl + MAX_GOLD_SL_USD - 0.05, 2)
+        entry = round(min(raw_entry, safe_bound, zh), 2)
+        sl_dist = round(entry - sl, 2)
+        tp_cap = (
+            round(float(opp_zone["zone_low"]) - min(safe_atr * 0.25, 1.50), 2)
+            if opp_zone and float(opp_zone["zone_low"]) > entry
+            else round(entry + sl_dist * 2.2, 2)
+        )
+        tp = round(min(entry + max(sl_dist * 2.0, 3.0), tp_cap), 2)
+        rr = round((tp - entry) / sl_dist, 2) if sl_dist > 0 else 0.0
+        side_valid = bool(curr_price <= 0 or entry < curr_price)
+        return {
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "sl_distance_usd": sl_dist,
+            "rr_ratio": rr,
+            "max_safe_entry_for_8usd_sl": safe_bound,
+            "below_current_price": side_valid,
+            "passes_hard_gate": bool(
+                side_valid
+                and (0.20 <= sl_dist <= MAX_GOLD_SL_USD)
+                and (rr >= MIN_GOLD_RR_RATIO)
+                and (zl <= entry <= zh)
+            ),
+            "entry_tier": entry_tier,
+            "has_fibo_confluence": has_conf,
+            "double_confluence": is_double,
+            "shifted_from_nearest": shifted_from_nearest,
+            "confirmation_policy": confirmation_policy,
+            "zone_low": round(zl, 2),
+            "zone_high": round(zh, 2),
+            "zone_label": zone.get("label"),
+        }
+
+    sl = round(zh + moat + max(spread, 0.0), 2)
+    safe_bound = round(sl - MAX_GOLD_SL_USD + 0.05, 2)
+    entry = round(max(raw_entry, safe_bound, zl), 2)
+    sl_dist = round(sl - entry, 2)
+    tp_cap = (
+        round(float(opp_zone["zone_high"]) + min(safe_atr * 0.25, 1.50), 2)
+        if opp_zone and float(opp_zone["zone_high"]) < entry
+        else round(entry - sl_dist * 2.2, 2)
+    )
+    tp = round(max(entry - max(sl_dist * 2.0, 3.0), tp_cap), 2)
+    rr = round((entry - tp) / sl_dist, 2) if sl_dist > 0 else 0.0
+    side_valid = bool(curr_price <= 0 or entry > curr_price)
+    return {
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "sl_distance_usd": sl_dist,
+        "rr_ratio": rr,
+        "min_safe_entry_for_8usd_sl": safe_bound,
+        "above_current_price": side_valid,
+        "passes_hard_gate": bool(
+            side_valid
+            and (0.20 <= sl_dist <= MAX_GOLD_SL_USD)
+            and (rr >= MIN_GOLD_RR_RATIO)
+            and (zl <= entry <= zh)
+        ),
+        "entry_tier": entry_tier,
+        "has_fibo_confluence": has_conf,
+        "double_confluence": is_double,
+        "shifted_from_nearest": shifted_from_nearest,
+        "confirmation_policy": confirmation_policy,
+        "zone_low": round(zl, 2),
+        "zone_high": round(zh, 2),
+        "zone_label": zone.get("label"),
+    }
+
+
+def _select_fibo_prioritized_zone_candidate(
+    primary_zone: Optional[Dict[str, Any]],
+    all_zones: List[Dict[str, Any]],
+    direction: str,
+    curr_price: float,
+    safe_atr: float,
+    moat: float,
+    spread: float,
+    fibo_data: Optional[Dict[str, Any]],
+    opp_zone: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    3-Tier Limit-First selection:
+    1) GOLDEN_ZONE_CONFLUENCE: primary zone overlaps Fibo Golden Zone.
+    2) NEARBY_GOLDEN_ZONE_SHIFT: nearby zone (<= max(1.5x ATR, $10)) overlaps Fibo Golden Zone and passes Hard Gate.
+    3) DEEP_ZONE_DISCOUNT: fallback to primary zone with deeper (35%/25%) placement.
+    """
+    if not primary_zone:
+        return None
+
+    if _zone_has_golden_confluence(primary_zone, fibo_data):
+        return _evaluate_zone_limit_candidate(
+            zone=primary_zone,
+            direction=direction,
+            curr_price=curr_price,
+            safe_atr=safe_atr,
+            moat=moat,
+            spread=spread,
+            fibo_data=fibo_data,
+            opp_zone=opp_zone,
+            entry_tier="GOLDEN_ZONE_CONFLUENCE",
+            shifted_from_nearest=False,
+        )
+
+    max_shift_dist = max(1.50 * safe_atr, 10.0)
+    nearby_candidates: List[tuple[float, Dict[str, Any]]] = []
+    for z in all_zones or []:
+        if z is primary_zone or (
+            float(z["zone_low"]) == float(primary_zone["zone_low"])
+            and float(z["zone_high"]) == float(primary_zone["zone_high"])
+        ):
+            continue
+        if not _zone_has_golden_confluence(z, fibo_data):
+            continue
+        zl, zh = float(z["zone_low"]), float(z["zone_high"])
+        if curr_price > 0:
+            if direction == "BUY" and zl >= curr_price:
+                continue
+            if direction == "SELL" and zh <= curr_price:
+                continue
+            dist = max(0.0, curr_price - zh) if direction == "BUY" else max(0.0, zl - curr_price)
+            if dist > max_shift_dist:
+                continue
+        else:
+            dist = 0.0
+        nearby_candidates.append((dist, z))
+
+    nearby_candidates.sort(key=lambda item: item[0])
+    for _, nz in nearby_candidates:
+        cand = _evaluate_zone_limit_candidate(
+            zone=nz,
+            direction=direction,
+            curr_price=curr_price,
+            safe_atr=safe_atr,
+            moat=moat,
+            spread=spread,
+            fibo_data=fibo_data,
+            opp_zone=opp_zone,
+            entry_tier="NEARBY_GOLDEN_ZONE_SHIFT",
+            shifted_from_nearest=True,
+        )
+        if cand["passes_hard_gate"]:
+            return cand
+
+    return _evaluate_zone_limit_candidate(
+        zone=primary_zone,
+        direction=direction,
+        curr_price=curr_price,
+        safe_atr=safe_atr,
+        moat=moat,
+        spread=spread,
+        fibo_data=fibo_data,
+        opp_zone=opp_zone,
+        entry_tier="DEEP_ZONE_DISCOUNT",
+        shifted_from_nearest=False,
+    )
+
+
 def _build_limit_entry_candidates(
     curr_price: float,
     curr_atr: float,
@@ -519,12 +745,14 @@ def _build_limit_entry_candidates(
     bars_5m: List[Bar],
     nearest_m5_demand: Optional[Dict[str, Any]] = None,
     nearest_m5_supply: Optional[Dict[str, Any]] = None,
+    demand_zones: Optional[List[Dict[str, Any]]] = None,
+    supply_zones: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Pre-calculate Hard-Risk-Gate-compliant Limit prices inside Demand/Supply zones
     so AI Trader can pre-place optimal Limit entries (SL <= $8.00, R:R >= 1.50) without missing moves.
-    Includes `micro_buy_limit` / `micro_sell_limit` for wide H1/M15 zones and
-    `m5_buy_limit_zone` / `m5_sell_limit_zone` for fresh M5 sub-structure inside wide ranges.
+    Prioritizes Fibo Golden Zone confluence (Tier 1), nearby Golden Zone shift (Tier 2),
+    and deep-zone discount placement (Tier 3), plus micro/M5 limits for wide ranges.
     """
     out: Dict[str, Any] = {
         "buy_limit_zone": None,
@@ -541,35 +769,19 @@ def _build_limit_entry_candidates(
 
     if nearest_demand:
         zl, zh = float(nearest_demand["zone_low"]), float(nearest_demand["zone_high"])
-        zmid = round((zl + zh) / 2.0, 2)
-        sl = round(zl - moat, 2)
-        max_safe_entry = round(sl + MAX_GOLD_SL_USD - 0.05, 2)
-        f65 = float(fibo_buy["fibo_650"]) if isinstance(fibo_buy, dict) and fibo_buy.get("fibo_650") else None
-        raw_entry = round(f65, 2) if (f65 and zl <= f65 <= zh) else zmid
-        entry = round(min(raw_entry, max_safe_entry, zh), 2)
-        sl_dist = round(entry - sl, 2)
-        tp_cap = (
-            round(float(nearest_supply["zone_low"]) - min(safe_atr * 0.25, 1.50), 2)
-            if nearest_supply and float(nearest_supply["zone_low"]) > entry
-            else round(entry + sl_dist * 2.2, 2)
+        buy_cand = _select_fibo_prioritized_zone_candidate(
+            primary_zone=nearest_demand,
+            all_zones=demand_zones or [],
+            direction="BUY",
+            curr_price=curr_price,
+            safe_atr=safe_atr,
+            moat=moat,
+            spread=spread,
+            fibo_data=fibo_buy,
+            opp_zone=nearest_supply,
         )
-        tp = round(min(entry + max(sl_dist * 2.0, 3.0), tp_cap), 2)
-        rr = round((tp - entry) / sl_dist, 2) if sl_dist > 0 else 0.0
-        out["buy_limit_zone"] = {
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "sl_distance_usd": sl_dist,
-            "rr_ratio": rr,
-            "max_safe_entry_for_8usd_sl": max_safe_entry,
-            "below_current_price": bool(curr_price <= 0 or entry < curr_price),
-            "passes_hard_gate": bool(
-                (curr_price <= 0 or entry < curr_price)
-                and (0.20 <= sl_dist <= MAX_GOLD_SL_USD)
-                and (rr >= MIN_GOLD_RR_RATIO)
-                and (zl <= entry <= zh)
-            ),
-        }
+        out["buy_limit_zone"] = buy_cand
+        entry = buy_cand["entry"]
 
         # Micro-Structure Buy Limit for Wide Demand Zones (> $8 width or deep entry > $6 away while near/in zone)
         in_or_near_demand = curr_price > 0 and (zl - 0.20 * safe_atr) <= curr_price <= (zh + 0.80 * safe_atr)
@@ -611,35 +823,19 @@ def _build_limit_entry_candidates(
 
     if nearest_supply:
         zl, zh = float(nearest_supply["zone_low"]), float(nearest_supply["zone_high"])
-        zmid = round((zl + zh) / 2.0, 2)
-        sl = round(zh + moat + max(spread, 0.0), 2)
-        min_safe_entry = round(sl - MAX_GOLD_SL_USD + 0.05, 2)
-        f65 = float(fibo_sell["fibo_650"]) if isinstance(fibo_sell, dict) and fibo_sell.get("fibo_650") else None
-        raw_entry = round(f65, 2) if (f65 and zl <= f65 <= zh) else zmid
-        entry = round(max(raw_entry, min_safe_entry, zl), 2)
-        sl_dist = round(sl - entry, 2)
-        tp_cap = (
-            round(float(nearest_demand["zone_high"]) + min(safe_atr * 0.25, 1.50), 2)
-            if nearest_demand and float(nearest_demand["zone_high"]) < entry
-            else round(entry - sl_dist * 2.2, 2)
+        sell_cand = _select_fibo_prioritized_zone_candidate(
+            primary_zone=nearest_supply,
+            all_zones=supply_zones or [],
+            direction="SELL",
+            curr_price=curr_price,
+            safe_atr=safe_atr,
+            moat=moat,
+            spread=spread,
+            fibo_data=fibo_sell,
+            opp_zone=nearest_demand,
         )
-        tp = round(max(entry - max(sl_dist * 2.0, 3.0), tp_cap), 2)
-        rr = round((entry - tp) / sl_dist, 2) if sl_dist > 0 else 0.0
-        out["sell_limit_zone"] = {
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "sl_distance_usd": sl_dist,
-            "rr_ratio": rr,
-            "min_safe_entry_for_8usd_sl": min_safe_entry,
-            "above_current_price": bool(curr_price <= 0 or entry > curr_price),
-            "passes_hard_gate": bool(
-                (curr_price <= 0 or entry > curr_price)
-                and (0.20 <= sl_dist <= MAX_GOLD_SL_USD)
-                and (rr >= MIN_GOLD_RR_RATIO)
-                and (zl <= entry <= zh)
-            ),
-        }
+        out["sell_limit_zone"] = sell_cand
+        entry = sell_cand["entry"]
 
         # Micro-Structure Sell Limit for Wide Supply Zones
         in_or_near_supply = curr_price > 0 and (zl - 0.80 * safe_atr) <= curr_price <= (zh + 0.20 * safe_atr)
@@ -924,6 +1120,8 @@ def build_gold_ai_context(
                 bars_5m=bars_5m,
                 nearest_m5_demand=m5_zone_map["nearest_m5_demand"],
                 nearest_m5_supply=m5_zone_map["nearest_m5_supply"],
+                demand_zones=demands,
+                supply_zones=supplies,
             ),
             "ea_advisory_reference": {
                 "ea_status": setup.get("status"),

@@ -1,7 +1,7 @@
 # Antigravity Active Trading Playbook (Master Unified View)
 *Automated AI Knowledge Base - รวมศูนย์กฎความปลอดภัยกลางและคู่มือเทรดเฉพาะสินทรัพย์*
 
-- **Last Compiled:** 2026-11-27 00:28:24 (BKK UTC+7)
+- **Last Compiled:** 2026-11-27 01:07:50 (BKK UTC+7)
 - **Target Environment:** Exness MT5 (Local IPC)
 - **Architecture:** Modular Playbook (Core Safety + Asset Extensions)
 

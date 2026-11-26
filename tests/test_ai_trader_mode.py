@@ -795,3 +795,181 @@ def test_smart_radar_missed_tp_cancel_opposite_zone_m5_subzone_and_displacement(
         )
         assert res_spike["wakeup_reason"] == "MARKET_MOMENTUM_ALERT"
         assert res_spike["context"]["chart"] is True
+
+
+def test_limit_candidates_golden_zone_confluence_uses_fibo_or_fallback_618():
+    cli = MT5Client()
+    cli.is_connected = False
+    cli.account_info = {"login": 160219615, "currency": "USC"}
+
+    # fibo_650 (3562.0) is outside overlap [3563.0..3566.0], while fibo_618 (3564.20) is inside overlap
+    setup = {
+        "mt5_symbol": "XAUUSDc",
+        "current_price": 3569.00,
+        "current_atr": 5.00,
+        "spread": 0.20,
+        "live_bar_range": 1.20,
+        "demand_zones": [{
+            "type": "DEMAND",
+            "pattern": "RBR",
+            "timeframe": "15m",
+            "label": "Demand 15m (RBR)",
+            "zone_high": 3566.50,
+            "zone_low": 3563.00,
+            "zone_mid": 3564.75,
+            "fibo_confluence": {
+                "has_confluence": True,
+                "fibo_650": 3562.00,
+                "overlap_low": 3563.00,
+                "overlap_high": 3566.00,
+                "overlap_mid": 3564.50,
+                "double_confluence": False,
+            },
+        }],
+        "supply_zones": [{
+            "type": "SUPPLY",
+            "pattern": "DBD",
+            "timeframe": "15m",
+            "label": "Supply 15m (DBD)",
+            "zone_high": 3585.00,
+            "zone_low": 3582.00,
+            "zone_mid": 3583.50,
+        }],
+        "fibo_buy": {"fibo_618": 3564.20, "fibo_650": 3562.00, "golden_zone_high": 3566.00, "golden_zone_low": 3560.00},
+        "fibo_sell": {"fibo_618": 3580.00, "fibo_650": 3581.00, "golden_zone_high": 3581.50, "golden_zone_low": 3579.00},
+    }
+    setup["nearest_demand"] = setup["demand_zones"][0]
+    setup["nearest_supply"] = setup["supply_zones"][0]
+
+    ctx = build_gold_ai_context(
+        include_chart=False,
+        client=cli,
+        setup_override=setup,
+        bars_override={"H1": [], "M15": [], "M5": _make_sample_bars(TimeFrame.M5, count=12, start_price=3568.0)},
+    )
+    buy_cand = ctx["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
+    assert buy_cand["entry_tier"] == "GOLDEN_ZONE_CONFLUENCE"
+    assert buy_cand["confirmation_policy"] == "IMMEDIATE_LIMIT_RELAXED"
+    assert buy_cand["shifted_from_nearest"] is False
+    assert buy_cand["entry"] == 3564.20  # Falls back cleanly from out-of-overlap fibo_650 to fibo_618
+    assert buy_cand["passes_hard_gate"] is True
+
+
+def test_limit_candidates_shifts_to_nearby_golden_zone_when_nearest_has_no_overlap():
+    cli = MT5Client()
+    cli.is_connected = False
+    cli.account_info = {"login": 160219615, "currency": "USC"}
+
+    shallow_demand = {
+        "type": "DEMAND",
+        "pattern": "RBR",
+        "timeframe": "15m",
+        "label": "Shallow Demand",
+        "zone_high": 3572.00,
+        "zone_low": 3569.50,
+        "zone_mid": 3570.75,
+        "fibo_confluence": {"has_confluence": False},
+    }
+    nearby_golden_demand = {
+        "type": "DEMAND",
+        "pattern": "DBR",
+        "timeframe": "15m",
+        "label": "Golden Demand",
+        "zone_high": 3566.50,
+        "zone_low": 3563.00,
+        "zone_mid": 3564.75,
+        "fibo_confluence": {
+            "has_confluence": True,
+            "fibo_650": 3564.80,
+            "overlap_low": 3563.50,
+            "overlap_high": 3566.50,
+            "overlap_mid": 3565.00,
+            "double_confluence": True,
+        },
+    }
+    setup = {
+        "mt5_symbol": "XAUUSDc",
+        "current_price": 3573.00,
+        "current_atr": 6.00,  # max shift dist = 9.0 -> clamped to $10.0; 3573 - 3566.5 = $6.5 <= $10
+        "spread": 0.20,
+        "live_bar_range": 1.10,
+        "demand_zones": [shallow_demand, nearby_golden_demand],
+        "supply_zones": [{
+            "type": "SUPPLY",
+            "pattern": "DBD",
+            "timeframe": "15m",
+            "label": "Supply 15m",
+            "zone_high": 3588.00,
+            "zone_low": 3585.00,
+            "zone_mid": 3586.50,
+        }],
+        "nearest_demand": shallow_demand,
+        "fibo_buy": {"fibo_618": 3565.80, "fibo_650": 3564.80, "golden_zone_high": 3566.50, "golden_zone_low": 3562.00},
+        "fibo_sell": {},
+    }
+    setup["nearest_supply"] = setup["supply_zones"][0]
+
+    ctx = build_gold_ai_context(
+        include_chart=False,
+        client=cli,
+        setup_override=setup,
+        bars_override={"H1": [], "M15": [], "M5": _make_sample_bars(TimeFrame.M5, count=12, start_price=3572.0)},
+    )
+    buy_cand = ctx["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
+    assert buy_cand["entry_tier"] == "NEARBY_GOLDEN_ZONE_SHIFT"
+    assert buy_cand["shifted_from_nearest"] is True
+    assert buy_cand["double_confluence"] is True
+    assert buy_cand["zone_label"] == "Golden Demand"
+    assert buy_cand["entry"] == 3564.80
+    assert buy_cand["passes_hard_gate"] is True
+
+
+def test_limit_candidates_non_confluent_places_deeper_discount_within_sl_cap():
+    cli = MT5Client()
+    cli.is_connected = False
+    cli.account_info = {"login": 160219615, "currency": "USC"}
+
+    setup = {
+        "mt5_symbol": "XAUUSDc",
+        "current_price": 3574.00,
+        "current_atr": 5.00,  # moat = 0.90
+        "spread": 0.20,
+        "live_bar_range": 1.00,
+        "demand_zones": [{
+            "type": "DEMAND",
+            "pattern": "RBR",
+            "timeframe": "15m",
+            "label": "Non-Confluent Demand",
+            "zone_high": 3572.00,
+            "zone_low": 3568.00,  # width = 4.0 -> 35% from low = 3569.40 (deeper than mid 3570.00)
+            "zone_mid": 3570.00,
+            "fibo_confluence": {"has_confluence": False},
+        }],
+        "supply_zones": [{
+            "type": "SUPPLY",
+            "pattern": "DBD",
+            "timeframe": "15m",
+            "label": "Supply 15m",
+            "zone_high": 3588.00,
+            "zone_low": 3585.00,
+            "zone_mid": 3586.50,
+        }],
+        "fibo_buy": {"fibo_618": 3558.00, "fibo_650": 3556.00, "golden_zone_high": 3558.00, "golden_zone_low": 3554.00},
+        "fibo_sell": {},
+    }
+    setup["nearest_demand"] = setup["demand_zones"][0]
+    setup["nearest_supply"] = setup["supply_zones"][0]
+
+    ctx = build_gold_ai_context(
+        include_chart=False,
+        client=cli,
+        setup_override=setup,
+        bars_override={"H1": [], "M15": [], "M5": _make_sample_bars(TimeFrame.M5, count=12, start_price=3573.0)},
+    )
+    buy_cand = ctx["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
+    assert buy_cand["entry_tier"] == "DEEP_ZONE_DISCOUNT"
+    assert buy_cand["confirmation_policy"] == "LIMIT_DEEP_WITH_KNIFE_GUARD"
+    assert buy_cand["shifted_from_nearest"] is False
+    assert buy_cand["entry"] == 3569.40
+    assert buy_cand["sl_distance_usd"] <= 8.00
+    assert buy_cand["passes_hard_gate"] is True

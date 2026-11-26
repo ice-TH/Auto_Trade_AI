@@ -64,7 +64,11 @@ flowchart TD
   ```powershell
   python -m src.execution.ai_trader_bridge context --chart --note "Inspect zone structure"
   ```
-- **วางคำสั่ง Pending Limit ดักต้นทุนคม (แนะนำเป็นหลักเมื่อรอราคาสะบัดเกี่ยว OTE 65% / ขอบ Base):**
+- **วางคำสั่ง Pending Limit ดักต้นทุนคม (แนะนำเป็นหลักเมื่อรอราคาสะบัดเกี่ยว OTE 65% / 61.8% / ขอบลึก Base):**
+  - ลำดับความสำคัญจาก `limit_entry_candidates`:
+    1. `GOLDEN_ZONE_CONFLUENCE`: วางที่ `fibo_650` (หรือ `61.8%` / `overlap_mid` อัตโนมัติ) โดยลดเกณฑ์รอแท่งยืนยันลง
+    2. `NEARBY_GOLDEN_ZONE_SHIFT`: ย้าย Limit ไปดักโซนใกล้เคียง (`<= 1.5x ATR`) ที่ซ้อนทับ Golden Zone แทนโซนตื้น
+    3. `DEEP_ZONE_DISCOUNT`: หากไม่ซ้อนทับ ให้วางลึกระดับ 35% จากขอบล่าง Demand / ขอบบน Supply (`25%` หาก Golden Zone ชิดขอบ) พร้อมเปิด Smart Radar คุม Knife Guard ตลอดเวลา
   ```powershell
   python -m src.execution.ai_trader_bridge place-limit --direction BUY --price <PRICE> --sl <SL> --tp <TP> --ttl 15 --reason "<เหตุผลเชิงกลยุทธ์>"
   ```

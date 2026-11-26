@@ -52,8 +52,11 @@ flowchart TD
    - **ลำดับการฟันธงทันทีเมื่ออยู่ใน/จ่อโซน (`ZONE_PROXIMITY` หรือตรวจรอบปกติ):**
      1. ตรวจ `safety_guards.can_open_new_trade == true`
      2. ตรวจ `structure_map.approach_momentum` (`buy_side_status` สำหรับฝั่ง Demand หรือ `sell_side_status` สำหรับฝั่ง Supply):
-        - **กรณี `SAFE_TO_LIMIT` (ไม่ได้ลง/ขึ้นเร็วแรง):** **บังคับวาง `place-limit` ดักไว้เลยทันที!** โดยอ่านจาก `structure_map.limit_entry_candidates`:
-          * **ท่าที่ 1 (โซนปกติ M15/H1):** ใช้ `buy_limit_zone` หรือ `sell_limit_zone` หาก `passes_hard_gate == true` และจุดเข้าไม่ลึกห่างราคาปัจจุบันเกินไป (`<= $6.50`)
+        - **กรณี `SAFE_TO_LIMIT` (ไม่ได้ลง/ขึ้นเร็วแรง):** **บังคับวาง `place-limit` ดักไว้เลยทันที!** โดยอ่านจาก `structure_map.limit_entry_candidates` ตามลำดับความสำคัญ 3 ระดับ:
+          * **Tier 1 (`GOLDEN_ZONE_CONFLUENCE`):** โซนซ้อนทับ Fibo Golden Zone → วาง Limit ที่ `fibo_650` (หรือถอยมาใช้ `61.8%` / `overlap_mid` อัตโนมัติ) ได้ทันที (`IMMEDIATE_LIMIT_RELAXED` ลดเกณฑ์รอแท่งยืนยันลง)
+          * **Tier 2 (`NEARBY_GOLDEN_ZONE_SHIFT`):** โซนใกล้สุดไม่ซ้อนทับ แต่มีโซนอื่นในระยะ `<= 1.5x ATR` ที่ซ้อนทับ Golden Zone → ย้าย Limit ไปดักที่โซนซ้อนทับนั้นแทนโซนตื้น (ภายใต้ `SL <= $8.00` และ `R:R >= 1.50`)
+          * **Tier 3 (`DEEP_ZONE_DISCOUNT`):** ไม่มีโซนซ้อน Golden Zone → วาง Limit ลึกขึ้นที่ช่วง **กลาง–ขอบล่าง Demand (35% จากฐาน)** หรือ **กลาง–ขอบบน Supply (35% จากยอด)** (`25%` หาก Golden Zone อยู่ชิดขอบโซน) โดยให้ Smart Radar คุม Knife Guard ตลอดเวลา
+          * **ท่าที่ 1 (โซนปกติ M15/H1):** ใช้ `buy_limit_zone` หรือ `sell_limit_zone` หาก `passes_hard_gate == true` และจุดเข้าไม่ลึกห่างราคาปัจจุบันเกินไป (`<= $6.50` หรือเป็น `GOLDEN_ZONE_CONFLUENCE` / `NEARBY_GOLDEN_ZONE_SHIFT`)
           * **ท่าที่ 2 (โซน H1/M15 กว้างเกิน \$8):** หากโซนกว้างมากจน `buy_limit_zone` ไปกองอยู่ก้นโซนลึกๆ แต่ราคาเริ่มสร้างฐานย่อย M5 ในโซนแล้ว ให้ใช้ **`micro_buy_limit` หรือ `micro_sell_limit`** (อิง SL ใต้ฐาน M5 ล่าสุดในงบ `<= $8.00`) เพื่อดักย่อรับของต้นน้ำทันทีโดยไม่ตกรถ!
           * **ท่าที่ 3 (โซนย่อย M5 สดใหม่กลางกรอบกว้าง `M5_ZONE_PROXIMITY`):** เมื่อกรอบ M15 กว้างมากแต่เกิดโซนย่อย M5 สดใหม่ (`retest_count <= 1`) ให้ตรวจรูปกราฟสกรีนดง Chop หากโครงสร้างสะอาดให้ใช้ **`m5_buy_limit_zone` หรือ `m5_sell_limit_zone`** ดักรับทันที (แต่ถ้าเป็นดง Sideway/Chop ไม่น่าเข้า ให้รันเรดาร์ต่อด้วย `--sync-next-m5` เพื่อไม่ให้ปลุกซ้ำที่โซนย่อยเดิมในวินาทีที่ 0)
         - **กรณี `FAST_IMPULSE_WAIT` (แท่ง M5 กระชากแรง `>= 1.5x ATR` เนื้อตัน):** ห้ามวางขวางมีดตก ให้รัน `wait-for-trigger --poll 15 --sync-next-m5` เพื่อรอแค่จบแท่ง 5 นาทีปัจจุบัน (ไม่เกิน 1–5 นาที) แล้วกลับมาวาง Limit ทันทีที่แรงทุบชะลอตัว
