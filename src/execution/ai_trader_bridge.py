@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.data.base import TimeFrame
 from src.data.mt5_adapter import MT5DataAdapter
 from src.execution.mt5_client import MT5Client, mt5_client
-from src.analysis.gold_strategy import MAX_GOLD_SL_USD, MIN_GOLD_RR_RATIO, scan_gold_setup
+from src.analysis.gold_strategy import MIN_GOLD_SL_USD, MAX_GOLD_SL_USD, MIN_GOLD_RR_RATIO, scan_gold_setup
 from src.analysis.gold_position_manager import manage_gold_positions
 from src.analysis.gold_ai_context import (
     build_gold_ai_context,
@@ -147,8 +147,8 @@ def validate_ai_gold_order(
     # 4. Hard SL Cap (<= $8.00) & Minimum R:R (>= 1.50)
     sl_dist = round(abs(entry_price - sl_price), 2)
     tp_dist = round(abs(tp_price - entry_price), 2)
-    if sl_dist < 0.20:
-        return {"valid": False, "code": "REJECTED_SL_TOO_TIGHT", "reason": f"SL distance (${sl_dist:.2f}) is unrealistically tight (< $0.20)."}
+    if sl_dist < MIN_GOLD_SL_USD:
+        return {"valid": False, "code": "REJECTED_SL_TOO_TIGHT", "reason": f"SL distance (${sl_dist:.2f}) is too tight for Gold noise (< ${MIN_GOLD_SL_USD:.2f})."}
     if sl_dist > MAX_GOLD_SL_USD:
         return {
             "valid": False,

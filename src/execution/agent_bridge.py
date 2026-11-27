@@ -103,6 +103,72 @@ def close_order(ticket: int) -> Dict[str, Any]:
 def close_all() -> Dict[str, Any]:
     return mt5_client.emergency_close_all()
 
+
+AI_CHART_SETUPS_PATH = PROJECT_ROOT / "data_store" / "ai_chart_setups.json"
+
+
+def set_chart_setup(
+    symbol: str,
+    direction: str = "WAIT",
+    entry: float = 0.0,
+    sl: float = 0.0,
+    tp: float = 0.0,
+    zone_low: float = None,
+    zone_high: float = None,
+    status: str = "WAITING_ZONE",
+    title: str = "",
+    reason: str = "",
+    timeframe: str = "5m",
+) -> Dict[str, Any]:
+    """Publish AI Trader's waiting zone and planned TP/SL setup so it renders on the web chart."""
+    from datetime import datetime, timezone
+    sym = symbol.upper().strip()
+    data = {}
+    if AI_CHART_SETUPS_PATH.exists():
+        try:
+            data = json.loads(AI_CHART_SETUPS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+    risk = abs(entry - sl) if (entry and sl) else 0.0
+    reward = abs(tp - entry) if (entry and tp) else 0.0
+    rr_ratio = round(reward / risk, 2) if risk > 0 else 0.0
+
+    setup = {
+        "symbol": sym,
+        "direction": direction.upper().strip(),
+        "status": status,
+        "entry_price": round(float(entry), 2) if entry else 0.0,
+        "stop_loss": round(float(sl), 2) if sl else 0.0,
+        "take_profit": round(float(tp), 2) if tp else 0.0,
+        "rr_ratio": rr_ratio,
+        "zone_low": round(float(zone_low), 2) if zone_low is not None else None,
+        "zone_high": round(float(zone_high), 2) if zone_high is not None else None,
+        "title": title or f"AI Trader ({direction.upper()})",
+        "reason": reason,
+        "timeframe": timeframe,
+        "source": "AI_TRADER",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    data[sym] = setup
+    AI_CHART_SETUPS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AI_CHART_SETUPS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"status": "SAVED", "setup": setup}
+
+
+def clear_chart_setup(symbol: str) -> Dict[str, Any]:
+    """Clear AI Trader's custom chart setup for a symbol."""
+    sym = symbol.upper().strip()
+    if not AI_CHART_SETUPS_PATH.exists():
+        return {"status": "NOT_FOUND", "symbol": sym}
+    try:
+        data = json.loads(AI_CHART_SETUPS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    removed = data.pop(sym, None)
+    AI_CHART_SETUPS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"status": "DELETED" if removed else "NOT_FOUND", "symbol": sym}
+
 def scan_btc_scalp() -> Dict[str, Any]:
     """Experimental 1m Fast Scalper for BTCUSD (Modular - can be safely removed)."""
     try:
@@ -240,12 +306,19 @@ def run_gold_loop(interval_sec: float = 60.0, max_iterations: int = 0, auto_exec
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Antigravity MT5 Bridge CLI")
-    parser.add_argument("action", choices=["scan", "account", "execute", "close", "close-all", "btc-scalp", "gold-strategy", "gold-loop"])
+    parser.add_argument("action", choices=["scan", "account", "execute", "close", "close-all", "btc-scalp", "gold-strategy", "gold-loop", "set-chart-setup", "clear-chart-setup"])
     parser.add_argument("--symbol", type=str, default="")
     parser.add_argument("--direction", type=str, default="BUY")
     parser.add_argument("--volume", type=float, default=0.01)
+    parser.add_argument("--entry", type=float, default=0.0)
     parser.add_argument("--sl", type=float, default=0.0)
     parser.add_argument("--tp", type=float, default=0.0)
+    parser.add_argument("--zone-low", type=float, default=None)
+    parser.add_argument("--zone-high", type=float, default=None)
+    parser.add_argument("--status", type=str, default="WAITING_ZONE")
+    parser.add_argument("--title", type=str, default="")
+    parser.add_argument("--reason", type=str, default="")
+    parser.add_argument("--timeframe", type=str, default="5m")
     parser.add_argument("--ticket", type=int, default=0)
     parser.add_argument("--manage-limits", action="store_true", default=True)
     parser.add_argument("--auto-execute-market", action="store_true", default=False)
@@ -278,3 +351,21 @@ if __name__ == "__main__":
         print(json.dumps(res, indent=2))
     elif args.action == "gold-loop":
         run_gold_loop(interval_sec=args.interval, max_iterations=args.iterations, auto_execute_market=args.auto_execute_market)
+    elif args.action == "set-chart-setup":
+        res = set_chart_setup(
+            symbol=args.symbol or "XAUUSD",
+            direction=args.direction,
+            entry=args.entry,
+            sl=args.sl,
+            tp=args.tp,
+            zone_low=args.zone_low,
+            zone_high=args.zone_high,
+            status=args.status,
+            title=args.title,
+            reason=args.reason,
+            timeframe=args.timeframe,
+        )
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    elif args.action == "clear-chart-setup":
+        res = clear_chart_setup(args.symbol or "XAUUSD")
+        print(json.dumps(res, ensure_ascii=False, indent=2))

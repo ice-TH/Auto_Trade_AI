@@ -405,7 +405,9 @@ def test_limit_approaching_prefill_wakeup_guard_ticket_and_candidates():
         assert buy_cand is not None
         assert buy_cand["sl_distance_usd"] <= 8.00
         assert buy_cand["rr_ratio"] >= 1.50
-        assert buy_cand["passes_hard_gate"] is True
+        # Wide $13.07 zone clamped fibo_650 (3543.40) down >$2.50 to 3537.85 -> flagged clamped_to_sl_cap & deferred to micro_limit
+        assert buy_cand["clamped_to_sl_cap"] is True
+        assert buy_cand["passes_hard_gate"] is False
         assert cands["last_closed_m5_retrace_50"] is not None
 
         # Place AI Buy Limit at candidate entry
@@ -924,26 +926,28 @@ def test_limit_candidates_shifts_to_nearby_golden_zone_when_nearest_has_no_overl
     assert buy_cand["passes_hard_gate"] is True
 
 
-def test_limit_candidates_non_confluent_places_deeper_discount_within_sl_cap():
+def test_limit_candidates_blocks_shallow_no_fibo_and_allows_trend_pullback_or_h1_rr():
     cli = MT5Client()
     cli.is_connected = False
     cli.account_info = {"login": 160219615, "currency": "USC"}
 
-    setup = {
+    # 1. Shallow zone (3568-3572) way above Fibo 38.2% (3564.0) -> NO_FIBO_SUPPORT (passes_hard_gate = False)
+    shallow_setup = {
         "mt5_symbol": "XAUUSDc",
         "current_price": 3574.00,
-        "current_atr": 5.00,  # moat = 0.90
+        "current_atr": 5.00,
         "spread": 0.20,
         "live_bar_range": 1.00,
         "demand_zones": [{
             "type": "DEMAND",
             "pattern": "RBR",
             "timeframe": "15m",
-            "label": "Non-Confluent Demand",
+            "label": "Shallow Floating Demand",
             "zone_high": 3572.00,
-            "zone_low": 3568.00,  # width = 4.0 -> 35% from low = 3569.40 (deeper than mid 3570.00)
+            "zone_low": 3568.00,
             "zone_mid": 3570.00,
-            "fibo_confluence": {"has_confluence": False},
+            "is_h1_role_reversal": False,
+            "fibo_confluence": {"has_confluence": False, "has_ok_fibo": False, "fibo_tier": "NONE"},
         }],
         "supply_zones": [{
             "type": "SUPPLY",
@@ -954,22 +958,82 @@ def test_limit_candidates_non_confluent_places_deeper_discount_within_sl_cap():
             "zone_low": 3585.00,
             "zone_mid": 3586.50,
         }],
-        "fibo_buy": {"fibo_618": 3558.00, "fibo_650": 3556.00, "golden_zone_high": 3558.00, "golden_zone_low": 3554.00},
+        "fibo_buy": {
+            "fibo_382": 3564.00,
+            "fibo_500": 3561.00,
+            "fibo_618": 3558.00,
+            "fibo_650": 3556.00,
+            "golden_zone_high": 3558.00,
+            "golden_zone_low": 3554.00,
+        },
         "fibo_sell": {},
     }
-    setup["nearest_demand"] = setup["demand_zones"][0]
-    setup["nearest_supply"] = setup["supply_zones"][0]
+    shallow_setup["nearest_demand"] = shallow_setup["demand_zones"][0]
+    shallow_setup["nearest_supply"] = shallow_setup["supply_zones"][0]
 
-    ctx = build_gold_ai_context(
+    ctx_blocked = build_gold_ai_context(
         include_chart=False,
         client=cli,
-        setup_override=setup,
+        setup_override=shallow_setup,
         bars_override={"H1": [], "M15": [], "M5": _make_sample_bars(TimeFrame.M5, count=12, start_price=3573.0)},
     )
-    buy_cand = ctx["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
-    assert buy_cand["entry_tier"] == "DEEP_ZONE_DISCOUNT"
-    assert buy_cand["confirmation_policy"] == "LIMIT_DEEP_WITH_KNIFE_GUARD"
-    assert buy_cand["shifted_from_nearest"] is False
-    assert buy_cand["entry"] == 3569.40
-    assert buy_cand["sl_distance_usd"] <= 8.00
-    assert buy_cand["passes_hard_gate"] is True
+    blocked_cand = ctx_blocked["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
+    assert blocked_cand["entry_tier"] == "NO_FIBO_SUPPORT"
+    assert blocked_cand["confirmation_policy"] == "BLOCKED_SHALLOW_NO_FIBO"
+    assert blocked_cand["passes_hard_gate"] is False
+
+    # 2. Zone overlapping Fibo 50.0% (3569.50 inside [3568.0..3572.0]) -> TREND_PULLBACK_FIBO (passes_hard_gate = True)
+    pullback_setup = dict(shallow_setup)
+    pullback_setup["fibo_buy"] = {
+        "fibo_382": 3573.00,
+        "fibo_500": 3569.50,
+        "fibo_618": 3566.00,
+        "fibo_650": 3565.00,
+        "golden_zone_high": 3566.00,
+        "golden_zone_low": 3562.00,
+    }
+    ctx_pb = build_gold_ai_context(
+        include_chart=False,
+        client=cli,
+        setup_override=pullback_setup,
+        bars_override={"H1": [], "M15": [], "M5": _make_sample_bars(TimeFrame.M5, count=12, start_price=3573.0)},
+    )
+    pb_cand = ctx_pb["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
+    assert pb_cand["entry_tier"] == "TREND_PULLBACK_FIBO"
+    assert pb_cand["has_ok_fibo"] is True
+    assert pb_cand["entry"] == 3569.50
+    assert pb_cand["sl_distance_usd"] <= 8.00
+    assert pb_cand["passes_hard_gate"] is True
+
+    # 3. Counter-trend H1+M15 BEARISH blocks blind BUY limit even with Fibo confluence
+    ct_setup = dict(pullback_setup, trend_indicators={"trend": "BEARISH", "h1_trend": "BEARISH"})
+    ctx_ct = build_gold_ai_context(
+        include_chart=False,
+        client=cli,
+        setup_override=ct_setup,
+        bars_override={"H1": [], "M15": [], "M5": _make_sample_bars(TimeFrame.M5, count=12, start_price=3573.0)},
+    )
+    ct_cand = ctx_ct["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
+    assert ct_cand["passes_hard_gate"] is False
+    assert ct_cand["confirmation_policy"] == "BLOCKED_COUNTER_TREND_BLIND_LIMIT"
+
+    # 4. M15 CHoCH Bearish blocks blind BUY limit even when EMA trend is still BULLISH/NEUTRAL
+    choch_setup = dict(
+        pullback_setup,
+        trend_indicators={
+            "trend": "BULLISH",
+            "h1_trend": "BULLISH",
+            "m15_structure": {"bias": "BEARISH", "pattern": "HH/HL", "live_break": "CHOCH_BEAR", "last_sh": 3582.0, "last_sl": 3571.0},
+            "h1_structure": {"bias": "BULLISH", "pattern": "HH/HL", "live_break": "NONE", "last_sh": 3590.0, "last_sl": 3550.0},
+        },
+    )
+    ctx_choch = build_gold_ai_context(
+        include_chart=False,
+        client=cli,
+        setup_override=choch_setup,
+        bars_override={"H1": [], "M15": [], "M5": _make_sample_bars(TimeFrame.M5, count=12, start_price=3573.0)},
+    )
+    choch_cand = ctx_choch["structure_map"]["limit_entry_candidates"]["buy_limit_zone"]
+    assert choch_cand["passes_hard_gate"] is False
+    assert choch_cand["confirmation_policy"] == "BLOCKED_M15_CHOCH_COUNTER_TREND"
+    assert ctx_choch["session_and_trend"]["trend_indicators"]["m15_structure"]["live_break"] == "CHOCH_BEAR"

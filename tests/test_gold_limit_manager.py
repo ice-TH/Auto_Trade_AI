@@ -269,3 +269,57 @@ def test_unified_gold_position_manager_locks_at_1r():
     assert len(res["actions_taken"]) == 1
     assert "Auto Break-Even" in res["actions_taken"][0]
     assert client.simulated_positions[0]["sl"] > 3620.00
+
+
+def test_manage_gold_limits_skips_shallow_zone_without_fibo_unless_h1_role_reversal():
+    client = MT5Client()
+    client.is_connected = False
+    _PENDING_ORDER_METADATA.clear()
+
+    p1, p2, p3 = _peaceful_guards()
+    with p1, p2, p3:
+        # 1. Shallow zone (fibo_tier=NONE, not H1 Role Reversal) -> BLOCKED!
+        shallow_setup = {
+            "symbol": "XAUUSDc",
+            "current_price": 3666.50,
+            "current_atr": 4.0,
+            "status": "WAITING_FOR_REJECTION",
+            "recommended_direction": "NEUTRAL",
+            "spread": 0.20,
+            "nearest_demand": {
+                "zone_high": 3665.82,
+                "zone_low": 3661.00,
+                "zone_mid": 3663.41,
+                "is_h1_role_reversal": False,
+                "fibo_confluence": {"has_confluence": False, "has_ok_fibo": False, "fibo_tier": "NONE"},
+            },
+        }
+        res_blocked = manage_gold_limits(shallow_setup, client=client)
+        assert res_blocked["active_pending_count"] == 0
+        assert any("SKIPPED_NO_FIBO_CONFLUENCE" in a for a in res_blocked["actions_taken"])
+
+        # 2. Trend Pullback Fibo (38.2%-50.0%, has_ok_fibo=True) -> ALLOWED!
+        pb_setup = {
+            "symbol": "XAUUSDc",
+            "current_price": 3623.00,
+            "current_atr": 4.0,
+            "status": "WAITING_FOR_REJECTION",
+            "recommended_direction": "NEUTRAL",
+            "spread": 0.20,
+            "nearest_demand": {
+                "zone_high": 3622.00,
+                "zone_low": 3616.00,
+                "zone_mid": 3619.00,
+                "is_h1_role_reversal": False,
+                "fibo_confluence": {
+                    "has_confluence": False,
+                    "has_ok_fibo": True,
+                    "fibo_tier": "TREND_PULLBACK",
+                    "fibo_target_level": 3618.50,
+                },
+            },
+        }
+        res_ok = manage_gold_limits(pb_setup, client=client)
+        assert res_ok["active_pending_count"] == 1
+        assert any("Fibo 38.2-50%" in a for a in res_ok["actions_taken"])
+        assert client.get_pending_orders("XAUUSDc")[0]["price"] == 3618.50

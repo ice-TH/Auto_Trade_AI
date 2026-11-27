@@ -1,0 +1,18 @@
+{
+  "XAUUSD": {
+    "symbol": "XAUUSD",
+    "direction": "BUY",
+    "status": "WAITING_ZONE",
+    "entry_price": 0.0,
+    "stop_loss": 3659.0,
+    "take_profit": 3676.0,
+    "rr_ratio": 0.0,
+    "zone_low": 3661.09,
+    "zone_high": 3664.94,
+    "title": "AI Trader (BUY)",
+    "reason": "Watching Fresh M5 Demand after M15 BOS_BEAR",
+    "timeframe": "5m",
+    "source": "AI_TRADER",
+    "updated_at": "2026-11-27T11:49:01.265761+00:00"
+  }
+}

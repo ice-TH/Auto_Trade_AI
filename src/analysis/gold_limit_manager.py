@@ -20,7 +20,12 @@ from src.risk.news_guard import (
     is_spread_acceptable,
     is_volatility_spike,
 )
-from src.analysis.gold_strategy import MAX_GOLD_SL_USD, MIN_GOLD_RR_RATIO, MIN_HEADROOM_ATR_MULT
+from src.analysis.gold_strategy import (
+    MAX_GOLD_SL_USD,
+    MIN_GOLD_RR_RATIO,
+    MIN_HEADROOM_ATR_MULT,
+    check_fibo_confluence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,23 @@ def _get_open_gold_positions(cli: MT5Client) -> List[Dict[str, Any]]:
         p for p in positions
         if any(k in str(p.get("symbol", "")).upper() for k in ("XAU", "GOLD"))
     ]
+
+
+def _zone_passes_fibo_or_h1_rr_gate(zone: Dict[str, Any], fibo_obj: Optional[Dict[str, Any]]) -> bool:
+    """
+    Require at least Fibo 38.2%-78.6% confluence (GOLDEN_ZONE or TREND_PULLBACK)
+    or an H1/Daily Role Reversal before placing a Smart Limit order.
+    If neither `fibo_confluence` nor `fibo_obj` is provided at all (minimal synthetic mock), allow legacy fallback.
+    """
+    if zone.get("is_h1_role_reversal"):
+        return True
+    conf = zone.get("fibo_confluence")
+    if isinstance(conf, dict) and len(conf) > 0:
+        return bool(conf.get("has_ok_fibo") or conf.get("has_confluence"))
+    if isinstance(fibo_obj, dict) and "golden_zone_high" in fibo_obj:
+        eval_c = check_fibo_confluence(float(zone["zone_high"]), float(zone["zone_low"]), fibo_obj)
+        return bool(eval_c.get("has_ok_fibo") or eval_c.get("has_confluence"))
+    return True
 
 
 def manage_gold_limits(
@@ -220,12 +242,28 @@ def manage_gold_limits(
             )
         )
         if can_place_buy and nearest_demand:
+            if not _zone_passes_fibo_or_h1_rr_gate(nearest_demand, fibo_buy):
+                actions_taken.append(
+                    f"SKIPPED_NO_FIBO_CONFLUENCE: โซน Demand (${nearest_demand['zone_low']:.2f}-${nearest_demand['zone_high']:.2f}) "
+                    f"ไม่มีแนว Fibo 38.2%-78.6% หรือ H1 Role Reversal รองรับ"
+                )
+                can_place_buy = False
+        if can_place_buy and nearest_demand:
             if setup_status == "ACTIONABLE_BUY_LIMIT" and rec_entry and rec_sl and rec_tp:
                 discount_entry = float(rec_entry)
                 sl_price = float(rec_sl)
                 tp_price = float(rec_tp)
-                is_double = nearest_demand.get("fibo_confluence", {}).get("double_confluence", False)
-                limit_comment = "SmartBuyLimit [⭐⭐ Double Fibo]" if is_double else "SmartBuyLimit [Fibo 65% OTE]"
+                conf = nearest_demand.get("fibo_confluence", {})
+                is_double = conf.get("double_confluence", False)
+                tier = conf.get("fibo_tier", "GOLDEN_ZONE")
+                if is_double:
+                    limit_comment = "SmartBuyLimit [⭐⭐ Double Fibo]"
+                elif tier == "TREND_PULLBACK":
+                    limit_comment = "SmartBuyLimit [Fibo 38.2-50%]"
+                elif nearest_demand.get("is_h1_role_reversal"):
+                    limit_comment = "SmartBuyLimit [H1 Role Reversal]"
+                else:
+                    limit_comment = "SmartBuyLimit [Fibo 65% OTE]"
             else:
                 conf = nearest_demand.get("fibo_confluence", {})
                 is_double = conf.get("double_confluence", False)
@@ -237,9 +275,15 @@ def manage_gold_limits(
                     else:
                         discount_entry = round(conf.get("overlap_mid", (nearest_demand["zone_high"] + nearest_demand["zone_low"]) / 2.0), 2)
                         limit_comment = "SmartBuyLimit [⭐⭐ Double Fibo]" if is_double else "SmartBuyLimit [Fibo Golden Zone]"
+                elif conf.get("has_ok_fibo"):
+                    target_lv = conf.get("fibo_target_level") or conf.get("overlap_mid")
+                    z_mid = (nearest_demand["zone_high"] + nearest_demand["zone_low"]) / 2.0
+                    raw_cand = float(target_lv) if target_lv is not None else z_mid
+                    discount_entry = round(min(max(raw_cand, nearest_demand["zone_low"]), nearest_demand["zone_high"]), 2)
+                    limit_comment = "SmartBuyLimit [Fibo 38.2-50%]"
                 else:
                     discount_entry = round(nearest_demand.get("zone_mid", (nearest_demand["zone_high"] + nearest_demand["zone_low"]) / 2.0), 2)
-                    limit_comment = "SmartBuyLimit [Discount 50%]"
+                    limit_comment = "SmartBuyLimit [H1 Role Reversal]" if nearest_demand.get("is_h1_role_reversal") else "SmartBuyLimit [Discount 50%]"
 
                 # Consistent structural moat buffer (0.75x ATR, fallback to 0.50x ATR only if zone is tight, never artificially shrunk below 0.50x)
                 sl_price = round(nearest_demand["zone_low"] - (current_atr * 0.75), 2)
@@ -296,12 +340,28 @@ def manage_gold_limits(
             )
         )
         if can_place_sell and nearest_supply:
+            if not _zone_passes_fibo_or_h1_rr_gate(nearest_supply, fibo_sell):
+                actions_taken.append(
+                    f"SKIPPED_NO_FIBO_CONFLUENCE: โซน Supply (${nearest_supply['zone_low']:.2f}-${nearest_supply['zone_high']:.2f}) "
+                    f"ไม่มีแนว Fibo 38.2%-78.6% หรือ H1 Role Reversal รองรับ"
+                )
+                can_place_sell = False
+        if can_place_sell and nearest_supply:
             if setup_status == "ACTIONABLE_SELL_LIMIT" and rec_entry and rec_sl and rec_tp:
                 discount_entry = float(rec_entry)
                 sl_price = float(rec_sl)
                 tp_price = float(rec_tp)
-                is_double = nearest_supply.get("fibo_confluence", {}).get("double_confluence", False)
-                limit_comment = "SmartSellLimit [⭐⭐ Double Fibo]" if is_double else "SmartSellLimit [Fibo 65% OTE]"
+                conf = nearest_supply.get("fibo_confluence", {})
+                is_double = conf.get("double_confluence", False)
+                tier = conf.get("fibo_tier", "GOLDEN_ZONE")
+                if is_double:
+                    limit_comment = "SmartSellLimit [⭐⭐ Double Fibo]"
+                elif tier == "TREND_PULLBACK":
+                    limit_comment = "SmartSellLimit [Fibo 38.2-50%]"
+                elif nearest_supply.get("is_h1_role_reversal"):
+                    limit_comment = "SmartSellLimit [H1 Role Reversal]"
+                else:
+                    limit_comment = "SmartSellLimit [Fibo 65% OTE]"
             else:
                 conf = nearest_supply.get("fibo_confluence", {})
                 is_double = conf.get("double_confluence", False)
@@ -313,9 +373,15 @@ def manage_gold_limits(
                     else:
                         discount_entry = round(conf.get("overlap_mid", (nearest_supply["zone_high"] + nearest_supply["zone_low"]) / 2.0), 2)
                         limit_comment = "SmartSellLimit [⭐⭐ Double Fibo]" if is_double else "SmartSellLimit [Fibo Golden Zone]"
+                elif conf.get("has_ok_fibo"):
+                    target_lv = conf.get("fibo_target_level") or conf.get("overlap_mid")
+                    z_mid = (nearest_supply["zone_high"] + nearest_supply["zone_low"]) / 2.0
+                    raw_cand = float(target_lv) if target_lv is not None else z_mid
+                    discount_entry = round(min(max(raw_cand, nearest_supply["zone_low"]), nearest_supply["zone_high"]), 2)
+                    limit_comment = "SmartSellLimit [Fibo 38.2-50%]"
                 else:
                     discount_entry = round(nearest_supply.get("zone_mid", (nearest_supply["zone_high"] + nearest_supply["zone_low"]) / 2.0), 2)
-                    limit_comment = "SmartSellLimit [Discount 50%]"
+                    limit_comment = "SmartSellLimit [H1 Role Reversal]" if nearest_supply.get("is_h1_role_reversal") else "SmartSellLimit [Discount 50%]"
 
                 # Consistent structural moat buffer + live_spread on SELL SL (since SELL closes at Ask)
                 sl_price = round(nearest_supply["zone_high"] + (current_atr * 0.75) + max(spread, 0.0), 2)

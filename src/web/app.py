@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Depends, HTTPException, Query, Body
@@ -458,6 +459,184 @@ def get_ai_narrative(symbol: str):
     return {
         "narrative": narrative,
         "antigravity_context": context_text
+    }
+
+
+AI_CHART_SETUPS_PATH = Path(__file__).resolve().parent.parent.parent / "data_store" / "ai_chart_setups.json"
+
+
+def _load_ai_chart_setups() -> Dict[str, Any]:
+    if not AI_CHART_SETUPS_PATH.exists():
+        return {}
+    try:
+        return json.loads(AI_CHART_SETUPS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_ai_chart_setups(data: Dict[str, Any]) -> None:
+    AI_CHART_SETUPS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AI_CHART_SETUPS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class AIChartSetupCreate(BaseModel):
+    symbol: str
+    direction: str = "WAIT"  # BUY, SELL, WAIT, NEUTRAL
+    status: str = "WAITING_ZONE"
+    entry_price: float = 0.0
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    zone_low: Optional[float] = None
+    zone_high: Optional[float] = None
+    title: str = ""
+    reason: str = ""
+    timeframe: str = "5m"
+    source: str = "AI_TRADER"
+
+
+@app.post("/api/ai/chart-setup")
+def save_ai_chart_setup(req: AIChartSetupCreate):
+    """Save or update an AI Trader waiting zone & TP/SL setup for chart visualization."""
+    sym = req.symbol.upper().strip()
+    setups = _load_ai_chart_setups()
+    setup_dict = req.model_dump()
+    setup_dict["symbol"] = sym
+    setup_dict["direction"] = req.direction.upper().strip()
+    setup_dict["updated_at"] = datetime.now(TZ_UTC).isoformat()
+    if setup_dict.get("entry_price") and setup_dict.get("stop_loss") and setup_dict.get("take_profit"):
+        risk = abs(setup_dict["entry_price"] - setup_dict["stop_loss"])
+        reward = abs(setup_dict["take_profit"] - setup_dict["entry_price"])
+        setup_dict["rr_ratio"] = round(reward / risk, 2) if risk > 0 else 0.0
+    else:
+        setup_dict["rr_ratio"] = 0.0
+
+    setups[sym] = setup_dict
+    _save_ai_chart_setups(setups)
+    return {"status": "SAVED", "setup": setup_dict}
+
+
+@app.delete("/api/ai/chart-setup/{symbol}")
+def delete_ai_chart_setup(symbol: str):
+    """Clear custom AI Trader chart setup for a symbol."""
+    sym = symbol.upper().strip()
+    setups = _load_ai_chart_setups()
+    removed = setups.pop(sym, None)
+    _save_ai_chart_setups(setups)
+    return {"status": "DELETED" if removed else "NOT_FOUND", "symbol": sym}
+
+
+@app.get("/api/ai/chart-setup/{symbol}")
+def get_ai_chart_setup(symbol: str):
+    """Return active AI Trader setup and/or strategy engine setup (waiting zone + TP/SL) for chart overlay."""
+    sym = symbol.upper().strip()
+    all_custom = _load_ai_chart_setups()
+    ai_trader_setup = all_custom.get(sym)
+
+    strategy_setup: Optional[Dict[str, Any]] = None
+    waiting_zones: List[Dict[str, Any]] = []
+
+    if sym in ("XAUUSD", "GOLD"):
+        try:
+            from src.analysis.gold_strategy import scan_gold_setup
+            gold = scan_gold_setup()
+            if "error" not in gold:
+                direction = gold.get("recommended_direction", "NEUTRAL")
+                nd = gold.get("nearest_demand")
+                ns = gold.get("nearest_supply")
+
+                for z in (gold.get("demand_zones") or [])[:2]:
+                    waiting_zones.append({
+                        "type": "DEMAND",
+                        "low": z.get("zone_low"),
+                        "high": z.get("zone_high"),
+                        "pattern": z.get("pattern", "DEMAND"),
+                    })
+                for z in (gold.get("supply_zones") or [])[:2]:
+                    waiting_zones.append({
+                        "type": "SUPPLY",
+                        "low": z.get("zone_low"),
+                        "high": z.get("zone_high"),
+                        "pattern": z.get("pattern", "SUPPLY"),
+                    })
+
+                target_zone = ns if direction == "SELL" else (nd if direction == "BUY" else (ns or nd))
+                strategy_setup = {
+                    "symbol": sym,
+                    "direction": direction,
+                    "status": gold.get("status", "MONITORING"),
+                    "entry_price": gold.get("recommended_entry", 0.0),
+                    "stop_loss": gold.get("recommended_sl", 0.0),
+                    "take_profit": gold.get("recommended_tp", 0.0),
+                    "rr_ratio": gold.get("rr_ratio", 0.0),
+                    "zone_low": target_zone.get("zone_low") if target_zone else None,
+                    "zone_high": target_zone.get("zone_high") if target_zone else None,
+                    "title": f"Gold Strategy: {gold.get('status', 'MONITORING')}",
+                    "reason": gold.get("setup_reason", ""),
+                    "timeframe": gold.get("trigger_timeframe", "M15"),
+                    "source": "GOLD_STRATEGY",
+                }
+        except Exception as e:
+            strategy_setup = {"symbol": sym, "direction": "NEUTRAL", "status": "UNAVAILABLE", "reason": str(e), "source": "GOLD_STRATEGY"}
+    elif sym == "BTCUSD":
+        try:
+            from src.analysis.btc_scalper import scan_btc_1m
+            btc = scan_btc_1m()
+            if "error" not in btc and btc.get("scalp_setup"):
+                sc = btc["scalp_setup"]
+                dz = (btc.get("structure") or {}).get("demand_zone")
+                strategy_setup = {
+                    "symbol": sym,
+                    "direction": sc.get("direction", "NEUTRAL"),
+                    "status": "SCALP_SETUP",
+                    "entry_price": sc.get("entry_price", 0.0),
+                    "stop_loss": sc.get("stop_loss", 0.0),
+                    "take_profit": sc.get("take_profit", 0.0),
+                    "rr_ratio": sc.get("risk_reward_ratio", 0.0),
+                    "zone_low": dz.get("price_low") if dz else None,
+                    "zone_high": dz.get("price_high") if dz else None,
+                    "title": f"BTC 1m Scalp: {sc.get('direction', '')}",
+                    "reason": sc.get("narrative", ""),
+                    "timeframe": "1m",
+                    "source": "BTC_SCALPER",
+                }
+        except Exception:
+            pass
+    else:
+        try:
+            plan = cached_plans.get(sym)
+            if plan is None:
+                bars_w = data_adapter.get_bars(sym, TimeFrame.WEEK, limit=150)
+                bars_d = data_adapter.get_bars(sym, TimeFrame.DAY, limit=500)
+                bars_m = data_adapter.get_bars(sym, TimeFrame.M15, limit=50)
+                zones = build_sr_zones(sym, bars_d, n_fractal=3)
+                plan = evaluate_bounce_setup(sym, bars_w, bars_d, bars_m, zones, settings)
+                cached_plans[sym] = plan
+            if plan and plan.entry_price > 0:
+                strategy_setup = {
+                    "symbol": sym,
+                    "direction": plan.direction,
+                    "status": plan.status.value,
+                    "entry_price": plan.entry_price,
+                    "stop_loss": plan.stop_loss,
+                    "take_profit": plan.take_profit,
+                    "rr_ratio": plan.risk_reward_ratio,
+                    "zone_low": None,
+                    "zone_high": None,
+                    "title": f"{plan.strategy_name} ({plan.status.value})",
+                    "reason": plan.rejection_reason or "",
+                    "timeframe": "1D",
+                    "source": "PLAN_ENGINE",
+                }
+        except Exception:
+            pass
+
+    active_setup = ai_trader_setup or strategy_setup
+    return {
+        "symbol": sym,
+        "active_setup": active_setup,
+        "ai_trader_setup": ai_trader_setup,
+        "strategy_setup": strategy_setup,
+        "waiting_zones": waiting_zones,
     }
 
 # ----------------- BACKTESTING & ANALYTICS -----------------

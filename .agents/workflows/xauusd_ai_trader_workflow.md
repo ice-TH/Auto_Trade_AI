@@ -1,82 +1,103 @@
 ---
 name: xauusd-ai-trader-workflow
-description: โหมดที่ 2 (AI Trader Mode) สำหรับทองคำ XAU/USD — ให้ Antigravity วิเคราะห์แท่งเทียนดิบ M5/M15/H1 + ภาพกราฟโซน Base จริง + ข่าวด่วน และตัดสินใจออก/ดูแลออเดอร์ด้วยตัวเองภายใต้ Hard Risk Gate พร้อมเรดาร์ปลุกอัตโนมัติทุก 20 วินาที
-version: 1.0.0
+description: โหมดที่ 2 (AI Trader Mode) สำหรับทองคำ XAU/USD — กลยุทธ์ Limit-First ดักโซนทันทีเมื่อไม่ลงแรง รองรับทั้งโซน M15/H1, Micro-Limit และโซนย่อย M5 กลางกรอบกว้าง พร้อม Smart Event-Driven Radar & โหมดประหยัด Token
+version: 1.3.0
 ---
 
-# XAU/USD Autonomous AI Trader Workflow (Mode 2 — Coexists with Mode 1)
+# XAU/USD Autonomous AI Trader Workflow (Mode 2 — Limit-First Immediate Execution & Pre-Fill Radar)
 
 > **ข้อควรระวังก่อนเริ่มใช้งาน (ห้ามเปิดชนกับ `gold-loop` เดิม):**
 > ระบบนี้ทำงานแยกอิสระจากโหมดที่ 1 (`gold-loop` / `gold-strategy`) 100% หากก่อนหน้านี้เปิด `gold-loop` ทิ้งไว้ใน Background ให้สั่งหยุด `gold-loop` ก่อนเริ่มโหมด AI Trader เพื่อไม่ให้ทั้งสองระบบแย่งกันวางหรือยกเลิก Limit
 
 ---
 
-## 0. แผนภาพผังกระบวนการทำงาน (AI Trader & 20s Radar Flowchart)
+## 0. แผนภาพผังกระบวนการทำงาน (Limit-First Immediate & Pre-Fill Radar)
 
 ```mermaid
 flowchart TD
-    Start["เริ่มโหมด AI Trader ในแชต Antigravity"] --> Radar["รัน Background Task: wait-for-trigger (เช็ก MT5 ทุก 20 วินาที - 0 โควตา AI)"]
-    
-    subgraph Python_Watchdog ["งานอิสระใน Python ทุก 20 วินาที (ไม่เปิดไม้ใหม่เอง)"]
+    Start["เริ่มโหมด AI Trader / ตื่นจากเรดาร์: อ่าน JSON Context"] --> CheckMom{"เช็ก safety_guards & approach_momentum"}
+    CheckMom -- "SAFE_TO_LIMIT (ไม่ได้พุ่ง/ทุบแรง >= 1.5x ATR)" --> PickLimit{"เลือกรูปแบบ Limit ใน limit_entry_candidates"}
+    PickLimit -- "โซนขนาดปกติ (ระยะไม่ลึกเกินไป)" --> ZoneLim["วาง buy_limit_zone / sell_limit_zone (SL คลุมนอกกรอบโซน)"]
+    PickLimit -- "โซนใหญ่กว้างเกิน $8 & ราคาสร้างฐาน M5 ในโซนแล้ว" --> MicroLim["วาง micro_buy_limit / micro_sell_limit (SL ใต้ Low/High ย่อย <= $8)"]
+    CheckMom -- "FAST_IMPULSE_WAIT (แท่ง M5 ทุบ/พุ่งแรง >= 1.5x ATR)" --> SyncM5["ชะลอรับมีด -> รอจบแท่ง M5 ปัจจุบันด้วย --sync-next-m5 (1-5 นาที)"]
+
+    ZoneLim --> Radar["รันเรดาร์ wait-for-trigger (เฝ้าทุก 20 วินาที + --limit-approach-atr 0.35)"]
+    MicroLim --> Radar
+    SyncM5 --> Start
+
+    subgraph Python_Watchdog ["งานคุ้มกันอิสระใน Python ทุก 20 วินาที (0 โควตา AI)"]
         Radar --> BE["1. เช็กไม้เปิดค้าง -> ล็อก Break-Even +1.0R อัตโนมัติ"]
-        BE --> GuardLimit["2. เช็ก Limit ของ AI -> ชักหนีทันทีถ้าเจอมีดตก / สเปรด > $0.40 / ข่าวตาราง / โซนแตก"]
+        BE --> GuardLimit["2. เช็ก Limit ของ AI -> ชักหนีทันทีถ้าเจอมีดตก / M5 แท่งตันทุบใส่ / สเปรด > $0.40 / ข่าว / โซนแตก"]
         GuardLimit --> CheckWake{"3. เช็กเงื่อนไขปลุก AI ทันที?"}
     end
-    
-    CheckWake -- "ยังห่างโซน & ยังไม่ครบ 15 นาที" --> Sleep20["พัก 20 วินาที แล้ววนเช็กใหม่"]
-    Sleep20 --> BE
-    
-    CheckWake -- "ราคาจ่อโซน (<= 0.8x ATR) / แท่ง M5 กระชาก / ไม้แมตช์หรือปิด / ครบ 15 นาที" --> WakeAI["ส่ง JSON แท่งเทียนดิบ + วาดกราฟลง screenshots/ai_trader/ แล้วจบ Task เพื่อปลุก AI ทันที!"]
-    
-    subgraph AI_Brain ["สมอง Antigravity AI Trader (เมื่อถูกปลุก)"]
-        WakeAI --> Analyze["วิเคราะห์แท่ง M5/M15/H1 + ดูภาพกราฟเช็ก Chop/Sideway + ค้นเว็บเช็กข่าวนอกตาราง"]
-        Analyze --> Decide{"ตัดสินใจเชิงกลยุทธ์"}
-        Decide -- "จังหวะคม & คุ้มเสี่ยง" --> Gate["ส่งคำสั่งผ่าน Hard Risk Gate (บังคับ Lot 0.06, 1 ไม้, SL <= $8, R:R >= 1.5)"]
-        Decide -- "จ่อโซนแต่รอแท่ง M5 ปิดยืนยัน" --> ShortRadar["ตั้งเรดาร์โหมด Sniper (ปลุกซ้ำใน 3 นาทีตามแท่ง M5)"]
-        Decide -- "ตลาดนิ่ง / เสี่ยงข่าว" --> NormalRadar["สั่งระงับ/ชัก Limit และตั้งเรดาร์รอบปกติ (สูงสุด 15 นาที)"]
+
+    CheckWake -- "LIMIT_APPROACHING (<= 0.35x ATR) / ZONE_PROXIMITY / FILLED / CLOSED" --> WakeAI["ปลุก AI ทันที!"]
+
+    subgraph AI_Brain ["สมอง Antigravity AI Trader (เมื่อถูกปลุก LIMIT_APPROACHING)"]
+        WakeAI --> PreFillCheck{"ตรวจแท่ง M5 ล่าสุด & ข่าวด่วนก่อนชน Limit"}
+        PreFillCheck -- "SAFE_TO_LIMIT / ย่อสวย / ข่าวปกติ" --> KeepLimit["คง Limit รับต้นทุนคมที่สุด -> รันเรดาร์ต่อพร้อม --guard-ticket <TICKET>"]
+        PreFillCheck -- "FAST_IMPULSE_WAIT / แท่งตันทุบดิ่ง / ข่าวด่วน" --> CancelLimit["สั่ง cancel-limit ชักออกทันเวลาก่อนโดนลาก!"]
     end
-    
-    Gate --> SaveAudit["บันทึกภาพกราฟ + เหตุผล AI (.png & .json) ลง screenshots/ai_trader/YYYY-MM-DD/"]
-    SaveAudit --> NormalRadar
+
+    KeepLimit --> Radar
+    CancelLimit --> SyncM5
 ```
 
 ---
 
-## 1. บทบาทและกฎเหล็กของ Antigravity ในโหมด AI Trader
+## 1. กฎเหล็ก Limit-First Execution Matrix (ห้ามรอยืนยันหลายชั้นจนตกรถ!)
 
-1. **วิเคราะห์ด้วยตรรกะเทรดเดอร์จริง (ไม่ใช่แค่สรุปผล EA):**
-   - อ่าน `raw_candles` ทั้ง `H1`, `M15`, และ `M5` (ดูขนาดเนื้อเทียน, `% ไส้เทียนบน/ล่าง`, การสร้างฐาน W / Higher Low / Lower High, Liquidity Sweep ตาม `[XAU-RULE-20]` และ `[XAU-RULE-24]`)
-   - หากมีไฟล์ภาพใน `chart_artifacts.image_path` ให้ใช้เครื่องมือ `read_file` เปิดดูภาพกราฟ **เพื่อเช็กด้วยตาเปล่าว่าโซนไม่ได้อยู่ในดง Sideway/Chop เละเทะเท่านั้น**
-   - **กฎเหล็กด้านตัวเลข:** **ห้ามกะระยะราคา Entry / SL / TP จากรูปภาพเด็ดขาด!** ต้องใช้ตัวเลขจาก JSON 100%
-   - ใช้ `search_web` เช็กข่าวด่วนนอกตาราง (Fed, ภูมิรัฐศาสตร์, ตัวเลขสหรัฐฯ) ก่อนเปิดไม้หรือเมื่อเห็นแท่งกระชากผิดปกติ
+1. **เลิกนิสัยนั่งรอแท่งยืนยันมือเปล่า (Immediate Limit Placement):**
+   - ธรรมชาติของ `XAU/USD` เวลาแตะโซนสถาบันมักเด้งแรง `$5–$8` ทันที ถ้ารอแท่ง M5 ปิดยืนยันหลายชั้น ต้นทุนจะแพงขึ้นจนเกินเพดาน `Hard SL <= $8.00` (ตกรถ หรือโดนบีบ SL ลอยกลางอากาศ)
+   - **ลำดับการฟันธงทันทีเมื่ออยู่ใน/จ่อโซน (`ZONE_PROXIMITY` หรือตรวจรอบปกติ):**
+     1. ตรวจ `safety_guards.can_open_new_trade == true`
+     2. ตรวจ `structure_map.approach_momentum` (`buy_side_status` สำหรับฝั่ง Demand หรือ `sell_side_status` สำหรับฝั่ง Supply):
+        - **กรณี `SAFE_TO_LIMIT` (ไม่ได้ลง/ขึ้นเร็วแรง):** **บังคับวาง `place-limit` ดักไว้เลยทันที!** โดยอ่านจาก `structure_map.limit_entry_candidates` ตามลำดับความสำคัญ 3 ระดับ:
+          * **Tier 1 (`GOLDEN_ZONE_CONFLUENCE`):** โซนซ้อนทับ Fibo Golden Zone (61.8%–78.6%) → วาง Limit ที่ `fibo_650` (หรือถอยมาใช้ `61.8%` / `overlap_mid` อัตโนมัติ) ได้ทันที (`IMMEDIATE_LIMIT_RELAXED` ลดเกณฑ์รอแท่งยืนยันลง)
+          * **Tier 2 (`NEARBY_GOLDEN_ZONE_SHIFT`):** โซนใกล้สุดไม่ซ้อนทับ แต่มีโซนอื่นในระยะ `<= 1.5x ATR` ที่ซ้อนทับ Golden Zone → ย้าย Limit ไปดักที่โซนซ้อนทับนั้นแทนโซนตื้น (ภายใต้ `SL <= $8.00` และ `R:R >= 1.50`)
+          * **Tier 3 (`TREND_PULLBACK_FIBO` / `H1_ROLE_REVERSAL`):** โซนซ้อนทับแนว Fibo Pullback ที่ใช้งานได้จริง (`38.2% – 61.8%` เช่น `38.2%` หรือ `50.0%`) หรือเป็นแนว **H1 Role Reversal** → วาง Limit ที่ระดับ Fibo `50.0%` / `38.2%` หรือช่วง 35% ลึกเข้าโซน พร้อมให้ Smart Radar คุม Knife Guard ตลอดเวลา
+          * **Tier 4 (`NO_FIBO_SUPPORT` — บล็อก Blind Limit):** โซนตื้นลอยกลางอากาศที่อยู่เหนือ `38.2%` (เช่น เหนือ `23.6%`) และไม่ใช่ H1 Role Reversal → ระบบจะติด `passes_hard_gate = false` **ห้ามตั้ง Limit ดักลอยๆ เด็ดขาด!** ต้องรอแท่งเทียน M5/M15 ปิดยืนยันการกลับตัวชัดเจนเท่านั้น
+          * **ท่าที่ 1 (โซนปกติ M15/H1):** ใช้ `buy_limit_zone` หรือ `sell_limit_zone` หาก `passes_hard_gate == true` และจุดเข้าไม่ลึกห่างราคาปัจจุบันเกินไป (`<= $6.50` หรือเป็น `GOLDEN_ZONE_CONFLUENCE` / `NEARBY_GOLDEN_ZONE_SHIFT`)
+          * **ท่าที่ 2 (โซน H1/M15 กว้างเกิน \$8):** หากโซนกว้างมากจน `buy_limit_zone` ไปกองอยู่ก้นโซนลึกๆ แต่ราคาเริ่มสร้างฐานย่อย M5 ในโซนแล้ว ให้ใช้ **`micro_buy_limit` หรือ `micro_sell_limit`** (อิง SL ใต้ฐาน M5 ล่าสุดในงบ `<= $8.00`) เพื่อดักย่อรับของต้นน้ำทันทีโดยไม่ตกรถ!
+          * **ท่าที่ 3 (โซนย่อย M5 สดใหม่กลางกรอบกว้าง `M5_ZONE_PROXIMITY`):** เมื่อกรอบ M15 กว้างมากแต่เกิดโซนย่อย M5 สดใหม่ (`retest_count <= 1`) ให้ตรวจรูปกราฟสกรีนดง Chop หากโครงสร้างสะอาดให้ใช้ **`m5_buy_limit_zone` หรือ `m5_sell_limit_zone`** ดักรับทันที (แต่ถ้าเป็นดง Sideway/Chop ไม่น่าเข้า ให้รันเรดาร์ต่อด้วย `--sync-next-m5` เพื่อไม่ให้ปลุกซ้ำที่โซนย่อยเดิมในวินาทีที่ 0)
+        - **กรณี `FAST_IMPULSE_WAIT` (แท่ง M5 กระชากแรง `>= 1.5x ATR` เนื้อตัน):** ห้ามวางขวางมีดตก ให้รัน `wait-for-trigger --poll 15 --sync-next-m5` เพื่อรอแค่จบแท่ง 5 นาทีปัจจุบัน (ไม่เกิน 1–5 นาที) แล้วกลับมาวาง Limit ทันทีที่แรงทุบชะลอตัว
 
-2. **ด่านบังคับความปลอดภัยอัตโนมัติในโค้ด (`Hard Risk Gate`):**
-   - พอร์ต Cent `#160219615` ล็อกคู่เงิน `XAUUSDc` และขนาด `0.06` Lot อัตโนมัติ (Demo ล็อก `0.01` Lot)
-   - ห้ามมีออเดอร์เปิดเกิน `1` ไม้ (Single-Position Guard)
-   - ระยะ `Hard SL` ต้อง `<= $8.00 USD` และ `R:R >= 1.50` เสมอ
-   - บล็อกการเข้าใหม่ทันทีเมื่อ `Spread > $0.40`, ติด `News Blackout`, หรือ `Rollover Blackout`
+2. **ห้ามใช้ `--sniper-m5` นอนรอเฉยๆ 30 นาทีขณะมือเปล่า:**
+   - เมื่อวาง `place-limit` เสร็จแล้ว ให้รันเรดาร์เกียร์หลักพร้อม `--limit-approach-atr 0.35` เสมอ (Python Watchdog จะคอยชักออเดอร์หนีให้อัตโนมัติทุก 20 วินาทีหากจู่ๆ เกิดแท่งมีดตก และจะปลุก AI ด้วย `LIMIT_APPROACHING` ก่อนราคาชนออเดอร์)
+   - ใช้ `--sync-next-m5` เฉพาะตอนติด `FAST_IMPULSE_WAIT` เท่านั้น
+
+3. **โหมดประหยัด Token (Token-Saving Context Mode — ค่ามาตรฐานแนะนำ):**
+   - **รอบปกติ:** ดึงเฉพาะ JSON (`python -m src.execution.ai_trader_bridge context` ไม่ต้องใส่ `--chart` และไม่ต้อง `search_web` ข่าว)
+   - **เปิดดูรูปกราฟ (`read_file` จาก `chart_artifacts.image_path`) และค้นเว็บข่าว (`search_web`) เฉพาะเมื่อ:**
+     1. ราคาจ่อโซนเตรียมเข้าไม้ / เรดาร์ปลุก `LIMIT_APPROACHING` หรือ `ZONE_PROXIMITY` เพื่อสกรีนดง Sideway/Chop และข่าวด่วนก่อนรับไม้
+     2. แท่ง M5 กระชากแรงผิดปกติ (`range_x_atr >= 1.5` หรือ `max_recent_m5_range_x_atr >= 1.5`)
+   - **รูปแบบการตอบกลับ:** สรุปสั้นกระชับที่สุด **ไม่เกิน 3–4 บรรทัดต่อรอบ** (ราคา & สภาวะ, สถานะพอร์ต/Limit, การตัดสินใจ, สถานะเรดาร์)
+
+4. **กฎเหล็กด้านตัวเลขและ `Hard Risk Gate`:**
+   - ใช้รูปภาพกราฟเพื่อเช็กทรง Sideway/Chop เท่านั้น ห้ามกะราคาด้วยสายตา ต้องใช้ตัวเลขจาก JSON 100%
+   - พอร์ต Cent `#160219615` ล็อก `XAUUSDc` ขนาด `0.06` Lot อัตโนมัติ, สูงสุด `1` ไม้, `Hard SL <= $8.00 USD`, `R:R >= 1.50`, และบล็อกทันทีเมื่อ `Spread > $0.40` หรือติด `News / Rollover Blackout`
 
 ---
 
 ## 2. ชุดคำสั่ง CLI เฉพาะโหมด AI Trader (`ai_trader_bridge.py`)
 
-- **ดึงข้อมูลแท่งเทียนดิบ + โซน + พอร์ต (ใส่ `--chart` เมื่อต้องการวาดรูปเช็กทรงกราฟ):**
+- **ดึงข้อมูล JSON โหมดประหยัด Token (รอบปกติ):**
   ```powershell
-  python -m src.execution.ai_trader_bridge context --chart --note "Inspect zone structure"
+  python -m src.execution.ai_trader_bridge context
   ```
-- **วางคำสั่ง Pending Limit ดักต้นทุนคม (แนะนำเป็นหลักเมื่อรอราคาสะบัดเกี่ยว OTE 65% / 61.8% / ขอบลึก Base):**
-  - ลำดับความสำคัญจาก `limit_entry_candidates`:
-    1. `GOLDEN_ZONE_CONFLUENCE`: วางที่ `fibo_650` (หรือ `61.8%` / `overlap_mid` อัตโนมัติ) โดยลดเกณฑ์รอแท่งยืนยันลง
-    2. `NEARBY_GOLDEN_ZONE_SHIFT`: ย้าย Limit ไปดักโซนใกล้เคียง (`<= 1.5x ATR`) ที่ซ้อนทับ Golden Zone แทนโซนตื้น
-    3. `DEEP_ZONE_DISCOUNT`: หากไม่ซ้อนทับ ให้วางลึกระดับ 35% จากขอบล่าง Demand / ขอบบน Supply (`25%` หาก Golden Zone ชิดขอบ) พร้อมเปิด Smart Radar คุม Knife Guard ตลอดเวลา
+- **ดึงข้อมูลพร้อมวาดกราฟโซน Base (เฉพาะจังหวะจ่อโซน/เช็ก Chop):**
+  ```powershell
+  python -m src.execution.ai_trader_bridge context --chart --note "Inspect zone before limit fill"
+  ```
+- **วางคำสั่ง Pending Limit ดักต้นทุนคม (ท่าหลักบังคับใช้เมื่อ `SAFE_TO_LIMIT`):**
   ```powershell
   python -m src.execution.ai_trader_bridge place-limit --direction BUY --price <PRICE> --sl <SL> --tp <TP> --ttl 15 --reason "<เหตุผลเชิงกลยุทธ์>"
   ```
-- **ยิงคำสั่ง Market Order ทันที (เมื่อแท่ง M5 ปิดยืนยันการกลับตัวในโซนและต้นทุนยังไม่วิ่งหนี):**
+- **ยิงคำสั่ง Market Order ทันที (เฉพาะเมื่อราคาอยู่ในจุดต้นทุนดีมากในโซน `SL <= $8.00` และกำลังจะดีดหนี):**
   ```powershell
   python -m src.execution.ai_trader_bridge place-market --direction BUY --sl <SL> --tp <TP> --reason "<เหตุผลเชิงกลยุทธ์>"
   ```
-- **ขยับ SL ล็อกกำไร / ปรับ TP / ยกเลิก Limit / ปิดไม้หนีภัยก่อนถึง TP:**
+- **ขยับ SL ล็อกกำไร / ปรับ TP / ยกเลิก Limit / ปิดไม้หนีภัย:**
   ```powershell
   python -m src.execution.ai_trader_bridge modify-sltp --ticket <ID> --sl <NEW_SL> --tp <NEW_TP> --reason "<เหตุผล>"
   python -m src.execution.ai_trader_bridge cancel-limit --reason "<เหตุผล>"
@@ -85,29 +106,19 @@ flowchart TD
 
 ---
 
-## 3. วงจรเรดาร์ 2 เกียร์ (Event-Driven Reactive Wakeup — 0 โควตาระหว่างรอ)
+## 3. วงจรเรดาร์ 3 เกียร์ (Event-Driven Reactive Wakeup — Live Log ตลอดเวลา)
 
-หลังจากวิเคราะห์และตัดสินใจในแต่ละรอบเสร็จ ให้สั่งรัน `wait-for-trigger` ด้วย `run_command` โดยตั้ง **`IsDaemon=false`**, **`WaitMsBeforeAsync=1000`**, และ **`NotificationTimeoutSeconds=960`** แล้วจบเทิร์นทันที (ไม่ต้องตั้ง Timer ซ้ำซ้อน):
+หลังจากตัดสินใจในแต่ละรอบเสร็จ ให้สั่งรัน `wait-for-trigger` ด้วย `run_command` โดยตั้ง **`IsDaemon=false`**, **`WaitMsBeforeAsync=1500`**, และตั้ง `NotificationTimeoutSeconds` ให้ครอบคลุม `--max-wait` แล้วจบเทิร์นทันที:
 
-1. **เกียร์ปกติ (ราคายังห่างโซน / มีไม้เปิดหรือวาง Limit ไว้แล้ว):**
+1. **เกียร์หลัก Smart Radar (เฝ้าโซน M15/H1 + โซนย่อย M5 + ปลุกเมื่อขยับ `>= 1.0x ATR` + ปลุกล่วงหน้าก่อนชน Limit `<= 0.35x ATR` + ยกเลิกอัตโนมัติเมื่อราคาถึง TP ก่อนรับไม้):**
    ```powershell
-   python -m src.execution.ai_trader_bridge wait-for-trigger --poll 20 --max-wait 900 --proximity-atr 0.8
+   python -m src.execution.ai_trader_bridge wait-for-trigger --poll 20 --max-wait 1800 --proximity-atr 0.7 --limit-approach-atr 0.35 --displacement-atr 1.0
    ```
-   - สคริปต์จะเฝ้า MT5 ทุก 20 วินาที คอยล็อก **Break-Even `+1.0R`** และชัก Limit หนีมีดตกให้เอง
-   - หากราคาวิ่งเข้าจ่อโซน (`<= 0.8x ATR`) หรือไม้ถูกเกี่ยว/ปิด สคริปต์จะวาดกราฟเก็บลง `screenshots/ai_trader/YYYY-MM-DD/` และ **จบการทำงานเพื่อปลุก AI ในแชตทันที!** (หากตลาดนิ่งจะปลุกทุก 15 นาที)
-
-2. **เกียร์ซุ่มสไนเปอร์ M5 (ราคาอยู่ในโซนแล้ว แต่ AI รอดูแท่ง M5 ถัดไปปิดจบแท่ง):**
+2. **เกียร์ยืนยันรับไม้ (หลังจาก AI ตื่นมาตรวจ `LIMIT_APPROACHING` แล้วอนุมัติให้คง Limit รับออเดอร์ต่อ):**
    ```powershell
-   python -m src.execution.ai_trader_bridge wait-for-trigger --poll 20 --max-wait 180 --sniper-m5
+   python -m src.execution.ai_trader_bridge wait-for-trigger --poll 20 --max-wait 1800 --proximity-atr 0.7 --guard-ticket <TICKET>
    ```
-   - เฝ้าความปลอดภัยทุก 20 วินาทีเหมือนเดิม แต่จะรอครบ 3 นาทีเพื่อให้แท่ง `M5` สร้างตัว/ปิดแท่งใหม่ แล้วปลุก AI พร้อมรูปกราฟสดทันทีโดยไม่ปลุกซ้ำรัวๆ ในวินาทีเดิม
-
----
-
-## 4. ตัวอย่าง Prompt สำหรับสั่งสลับใช้งานทั้ง 2 โหมด
-
-- **สั่งรันโหมดที่ 2 (AI Trader เต็มรูปแบบ):**
-  > "เริ่มเทรดทองคำด้วยโหมด AI Trader ตาม workflow `xauusd-ai-trader-workflow` ได้เลยครับ อนุญาตให้อ่านแท่งเทียนดิบ เช็กกราฟและข่าวด่วน แล้วตัดสินใจออกออเดอร์/วาง Limit/ดูแลไม้เองภายใต้ Hard Risk Gate พร้อมเปิดเรดาร์ `wait-for-trigger` เฝ้าปลุกอัตโนมัติได้เลย"
-
-- **สั่งกลับไปใช้โหมดที่ 1 (ระบบ EA เดิมที่คุณคุ้นเคย):**
-  > "หยุดเรดาร์ AI Trader แล้วสลับกลับไปรัน `gold-loop` ทุก 60 วินาทีตามระบบเดิม (`xauusd-m5-execution-workflow`) แทนครับ"
+3. **เกียร์รอจบแท่ง M5 ปัจจุบันเมื่อเจอแท่งพุ่ง/ทุบแรง (`FAST_IMPULSE_WAIT`):**
+   ```powershell
+   python -m src.execution.ai_trader_bridge wait-for-trigger --poll 15 --sync-next-m5
+   ```

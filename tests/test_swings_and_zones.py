@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timedelta, timezone
 from src.data.base import Bar, TimeFrame, DataStatus, SessionType
-from src.analysis.swings import detect_swings
+from src.analysis.swings import detect_swings, analyze_market_structure
 from src.analysis.zones import build_sr_zones
 
 def create_bars_with_pattern(highs, lows, closes):
@@ -65,3 +65,34 @@ def test_zone_building_and_clustering():
     res_zones = [z for z in zones if z.zone_type == "RESISTANCE"]
     assert len(res_zones) >= 1
     assert any(abs(z.price_mid - 150.0) < 5.0 for z in res_zones)
+
+
+def test_analyze_market_structure_hh_hl_and_choch_bear():
+    # Build two ascending swing highs (120 -> 135) and two ascending swing lows (100 -> 112)
+    # Using n_fractal=2 (5-bar window per pivot)
+    closes = [
+        108, 104, 100, 105, 110,  # SL1 = 100 at idx 2
+        115, 120, 116, 113,       # SH1 = 120 at idx 6
+        112, 115, 120, 125,       # SL2 = 112 at idx 9 (HL)
+        130, 135, 128, 122, 118,  # SH2 = 135 at idx 14 (HH)
+    ]
+    highs = [c + 1.0 for c in closes]
+    lows = [c - 1.0 for c in closes]
+    bars_bull = create_bars_with_pattern(highs, lows, closes)
+
+    st_bull = analyze_market_structure(bars_bull, n_fractal=2)
+    assert st_bull["pattern"] == "HH/HL"
+    assert st_bull["swing_bias"] == "BULLISH"
+    assert st_bull["bias"] == "BULLISH"
+    assert st_bull["live_break"] == "NONE"
+
+    # Now append a bar that closes strictly below last confirmed Swing Low (111.0) -> CHOCH_BEAR
+    closes_break = closes + [109.0]
+    highs_break = [c + 1.0 for c in closes_break]
+    lows_break = [c - 1.0 for c in closes_break]
+    bars_choch = create_bars_with_pattern(highs_break, lows_break, closes_break)
+
+    st_choch = analyze_market_structure(bars_choch, n_fractal=2)
+    assert st_choch["pattern"] == "HH/HL"
+    assert st_choch["live_break"] == "CHOCH_BEAR"
+    assert st_choch["bias"] == "BEARISH"

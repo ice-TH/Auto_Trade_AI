@@ -6,6 +6,10 @@ let candleSeries = null;
 let volumeSeries = null;
 let emaSeries = {};
 let priceLines = [];
+let aiSetupPriceLines = [];
+let aiSetupPrimitive = null;
+let aiSetupPayload = null;
+let chartTickCounter = 0;
 let currentTrackingLine = null;
 
 // Initialize on Load
@@ -481,6 +485,12 @@ function initChart() {
     priceScaleId: "right",
   });
 
+  // Attach AI TP/SL & Waiting Zone Overlay Primitive
+  aiSetupPrimitive = new AISetupPrimitive();
+  if (typeof candleSeries.attachPrimitive === "function") {
+    candleSeries.attachPrimitive(aiSetupPrimitive);
+  }
+
   // Volume Series on separate scale at bottom
   volumeSeries = addHistogram({
     color: "rgba(0, 192, 118, 0.2)",
@@ -598,6 +608,11 @@ async function loadChartData(symbol, timeframe) {
       });
     }
 
+    chartTickCounter += 1;
+    if (chartTickCounter % 5 === 0) {
+      loadAISetup(currentSymbol);
+    }
+
     // Scroll to latest price bar and focus on the most recent candles
     if (candles.length > 0) {
       const totalBars = candles.length;
@@ -612,6 +627,7 @@ async function loadChartData(symbol, timeframe) {
     }
 
     loadZones(symbol);
+    loadAISetup(symbol);
     loadSymbolPlan(symbol);
     loadAINarrative(symbol);
   } catch (err) {
@@ -1321,6 +1337,302 @@ function toggleEMA() {
 
 function toggleSR() {
   loadZones(currentSymbol);
+}
+
+function toggleAISetup() {
+  renderAISetupOverlay();
+}
+
+// TradingView-style Long/Short TP/SL & Waiting Zone Primitive (Lightweight Charts v5)
+class AISetupPrimitive {
+  constructor() {
+    this._series = null;
+    this._requestUpdate = null;
+    this._data = null;
+    this._visible = true;
+  }
+
+  attached({ series, requestUpdate }) {
+    this._series = series;
+    this._requestUpdate = requestUpdate;
+  }
+
+  detached() {
+    this._series = null;
+    this._requestUpdate = null;
+  }
+
+  setData(data, visible = true) {
+    this._data = data;
+    this._visible = visible;
+    if (this._requestUpdate) this._requestUpdate();
+  }
+
+  updateAllViews() {}
+
+  paneViews() {
+    if (!this._visible || !this._data || !this._series) return [];
+    const self = this;
+    return [{
+      zOrder() { return "bottom"; },
+      renderer() {
+        return {
+          draw(target) {
+            target.useMediaCoordinateSpace(scope => {
+              self._drawMedia(scope.context, scope.mediaSize);
+            });
+          }
+        };
+      }
+    }];
+  }
+
+  _drawMedia(ctx, mediaSize) {
+    const series = this._series;
+    const payload = this._data;
+    if (!series || !payload) return;
+
+    const { width, height } = mediaSize;
+    const setup = payload.active_setup;
+    const waitingZones = payload.waiting_zones || [];
+
+    ctx.save();
+    ctx.font = "600 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+
+    // 1. Secondary Demand/Supply Waiting Zones (subtle right-side bands)
+    waitingZones.forEach(z => {
+      if (z.low == null || z.high == null) return;
+      const yTop = series.priceToCoordinate(Math.max(z.low, z.high));
+      const yBot = series.priceToCoordinate(Math.min(z.low, z.high));
+      if (yTop === null || yBot === null) return;
+      const boxH = Math.max(4, yBot - yTop);
+      const xStart = Math.round(width * 0.58);
+      const boxW = width - xStart;
+      const isDem = z.type === "DEMAND";
+      ctx.fillStyle = isDem ? "rgba(16, 185, 129, 0.08)" : "rgba(239, 68, 68, 0.08)";
+      ctx.fillRect(xStart, yTop, boxW, boxH);
+      ctx.strokeStyle = isDem ? "rgba(16, 185, 129, 0.45)" : "rgba(239, 68, 68, 0.45)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(xStart, yTop, boxW, boxH);
+      ctx.setLineDash([]);
+    });
+
+    if (!setup) {
+      ctx.restore();
+      return;
+    }
+
+    // 2. Primary AI Waiting Zone Box (where AI is waiting for price)
+    if (setup.zone_low != null && setup.zone_high != null) {
+      const zLow = Math.min(setup.zone_low, setup.zone_high);
+      const zHigh = Math.max(setup.zone_low, setup.zone_high);
+      const yTop = series.priceToCoordinate(zHigh);
+      const yBot = series.priceToCoordinate(zLow);
+      if (yTop !== null && yBot !== null) {
+        const boxH = Math.max(8, yBot - yTop);
+        const xStart = Math.round(width * 0.45);
+        const boxW = width - xStart;
+        ctx.fillStyle = "rgba(245, 158, 11, 0.14)";
+        ctx.fillRect(xStart, yTop, boxW, boxH);
+        ctx.strokeStyle = "#d97706";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(xStart, yTop, boxW, boxH);
+        ctx.setLineDash([]);
+
+        const zoneLabel = `⏳ AI WAITING ZONE: $${zLow.toFixed(2)} - $${zHigh.toFixed(2)}`;
+        const labelY = Math.max(14, Math.min(height - 10, yTop - 6));
+        ctx.fillStyle = "#b45309";
+        ctx.fillText(zoneLabel, xStart + 8, labelY);
+      }
+    }
+
+    // 3. TradingView-style Long/Short Position Tool (TP / Entry / SL boxes)
+    const entry = Number(setup.entry_price || 0);
+    const sl = Number(setup.stop_loss || 0);
+    const tp = Number(setup.take_profit || 0);
+    const dir = (setup.direction || "WAIT").toUpperCase();
+
+    if (entry > 0 && (sl > 0 || tp > 0)) {
+      const yEntry = series.priceToCoordinate(entry);
+      const ySL = sl > 0 ? series.priceToCoordinate(sl) : null;
+      const yTP = tp > 0 ? series.priceToCoordinate(tp) : null;
+
+      const xBoxStart = Math.round(width * 0.72);
+      const xBoxWidth = Math.max(120, width - xBoxStart - 6);
+
+      if (yEntry !== null) {
+        // TP Box (Green)
+        if (yTP !== null) {
+          const top = Math.min(yEntry, yTP);
+          const boxH = Math.max(4, Math.abs(yTP - yEntry));
+          ctx.fillStyle = "rgba(16, 185, 129, 0.20)";
+          ctx.fillRect(xBoxStart, top, xBoxWidth, boxH);
+          ctx.strokeStyle = "#10b981";
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(xBoxStart, top, xBoxWidth, boxH);
+
+          const tpDiff = Math.abs(tp - entry).toFixed(2);
+          ctx.fillStyle = "#047857";
+          const tpTextY = yTP < yEntry ? Math.max(14, top + 14) : Math.min(height - 6, top + boxH - 6);
+          ctx.fillText(`TP $${tp.toFixed(2)} (+$${tpDiff})`, xBoxStart + 8, tpTextY);
+        }
+
+        // SL Box (Red)
+        if (ySL !== null) {
+          const top = Math.min(yEntry, ySL);
+          const boxH = Math.max(4, Math.abs(ySL - yEntry));
+          ctx.fillStyle = "rgba(239, 68, 68, 0.20)";
+          ctx.fillRect(xBoxStart, top, xBoxWidth, boxH);
+          ctx.strokeStyle = "#ef4444";
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(xBoxStart, top, xBoxWidth, boxH);
+
+          const slDiff = Math.abs(entry - sl).toFixed(2);
+          ctx.fillStyle = "#b91c1c";
+          const slTextY = ySL > yEntry ? Math.min(height - 6, top + boxH - 6) : Math.max(14, top + 14);
+          ctx.fillText(`SL $${sl.toFixed(2)} (-$${slDiff})`, xBoxStart + 8, slTextY);
+        }
+
+        // Entry Line + Pill
+        ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(xBoxStart, yEntry);
+        ctx.lineTo(xBoxStart + xBoxWidth, yEntry);
+        ctx.stroke();
+
+        const rrText = setup.rr_ratio > 0 ? ` | R:R 1:${Number(setup.rr_ratio).toFixed(2)}` : "";
+        const entryLabel = `🎯 ${dir} @ $${entry.toFixed(2)}${rrText}`;
+        const pillW = ctx.measureText(entryLabel).width + 14;
+        const pillY = Math.max(2, yEntry - 11);
+        ctx.fillStyle = "#1e40af";
+        ctx.fillRect(xBoxStart, pillY, pillW, 18);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(entryLabel, xBoxStart + 7, pillY + 13);
+      }
+    }
+
+    ctx.restore();
+  }
+}
+
+async function loadAISetup(symbol) {
+  try {
+    const res = await fetch(`/api/ai/chart-setup/${symbol}`);
+    if (!res.ok) return;
+    aiSetupPayload = await res.json();
+    renderAISetupOverlay();
+  } catch (err) {
+    console.error("Failed to load AI chart setup:", err);
+  }
+}
+
+function clearAISetupOverlay() {
+  aiSetupPriceLines.forEach(pl => {
+    try { candleSeries?.removePriceLine(pl); } catch (_) {}
+  });
+  aiSetupPriceLines = [];
+  if (aiSetupPrimitive) aiSetupPrimitive.setData(null, false);
+  const hud = document.getElementById("ai-chart-setup-hud");
+  if (hud) hud.style.display = "none";
+}
+
+function renderAISetupOverlay() {
+  const showAI = document.getElementById("check-ai-setup")?.checked ?? true;
+  if (!showAI || !aiSetupPayload) {
+    clearAISetupOverlay();
+    return;
+  }
+
+  aiSetupPriceLines.forEach(pl => {
+    try { candleSeries?.removePriceLine(pl); } catch (_) {}
+  });
+  aiSetupPriceLines = [];
+
+  if (aiSetupPrimitive) {
+    aiSetupPrimitive.setData(aiSetupPayload, true);
+  }
+
+  const setup = aiSetupPayload.active_setup;
+  const hud = document.getElementById("ai-chart-setup-hud");
+
+  if (!setup) {
+    if (hud) hud.style.display = "none";
+    return;
+  }
+
+  // Price-axis lines for Entry, SL, TP
+  if (candleSeries) {
+    if (setup.entry_price > 0) {
+      aiSetupPriceLines.push(candleSeries.createPriceLine({
+        price: Number(setup.entry_price),
+        color: "#2563eb",
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `AI ENTRY (${setup.direction || "WAIT"})`,
+      }));
+    }
+    if (setup.stop_loss > 0) {
+      aiSetupPriceLines.push(candleSeries.createPriceLine({
+        price: Number(setup.stop_loss),
+        color: "#ef4444",
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "AI SL",
+      }));
+    }
+    if (setup.take_profit > 0) {
+      aiSetupPriceLines.push(candleSeries.createPriceLine({
+        price: Number(setup.take_profit),
+        color: "#10b981",
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "AI TP",
+      }));
+    }
+  }
+
+  if (hud) {
+    const dir = (setup.direction || "WAIT").toUpperCase();
+    const badgeColor = dir === "BUY" ? "#059669" : (dir === "SELL" ? "#dc2626" : "#d97706");
+    const isCustom = setup.source === "AI_TRADER";
+    const zoneTxt = (setup.zone_low != null && setup.zone_high != null)
+      ? `<span style="color:#b45309;">⏳ Zone: $${Number(setup.zone_low).toFixed(2)} - $${Number(setup.zone_high).toFixed(2)}</span>`
+      : "";
+    const entryTxt = setup.entry_price > 0 ? `<span style="color:#1d4ed8;">Entry: $${Number(setup.entry_price).toFixed(2)}</span>` : "";
+    const slTxt = setup.stop_loss > 0 ? `<span style="color:#dc2626;">SL: $${Number(setup.stop_loss).toFixed(2)}</span>` : "";
+    const tpTxt = setup.take_profit > 0 ? `<span style="color:#059669;">TP: $${Number(setup.take_profit).toFixed(2)}</span>` : "";
+    const rrTxt = setup.rr_ratio > 0 ? `<span style="color:#7c3aed;">R:R 1:${Number(setup.rr_ratio).toFixed(2)}</span>` : "";
+
+    hud.style.display = "block";
+    hud.innerHTML = `
+      <div class="ai-setup-hud-header">
+        <div>
+          <span style="background:${badgeColor}; color:#fff; padding:2px 6px; border-radius:4px; font-weight:800; font-size:10px;">${dir}</span>
+          <strong style="margin-left:4px;">${setup.title || setup.status || "AI Setup"}</strong>
+        </div>
+        ${isCustom ? `<button class="btn" style="padding:1px 6px; font-size:10px;" onclick="clearCustomAISetup('${setup.symbol}')">✕ Clear</button>` : ""}
+      </div>
+      <div class="ai-setup-hud-prices">
+        ${zoneTxt} ${entryTxt} ${slTxt} ${tpTxt} ${rrTxt}
+      </div>
+      ${setup.reason ? `<div class="ai-setup-hud-reason">${setup.reason}</div>` : ""}
+    `;
+  }
+}
+
+async function clearCustomAISetup(symbol) {
+  try {
+    await fetch(`/api/ai/chart-setup/${symbol}`, { method: "DELETE" });
+    await loadAISetup(symbol);
+  } catch (err) {
+    console.error("Failed to clear AI setup:", err);
+  }
 }
 
 // Manual Zone Creation

@@ -20,6 +20,7 @@ import logging
 from src.data.base import Bar, TimeFrame
 from src.data.mt5_adapter import MT5DataAdapter
 from src.analysis.indicators import calculate_atr, calculate_ema, calculate_sma
+from src.analysis.swings import analyze_market_structure
 from src.analysis.zones import build_sr_zones
 from src.risk.news_guard import is_volatility_spike
 
@@ -30,6 +31,7 @@ TZ_LONDON = ZoneInfo("Europe/London")
 TZ_NEW_YORK = ZoneInfo("America/New_York")
 
 # Quantitative Safety Thresholds for Gold (XAU/USD) Intraday
+MIN_GOLD_SL_USD = 2.00        # Minimum SL distance ($2.00) to avoid Gold noise stop-hunts
 MAX_GOLD_SL_USD = 8.00        # Hard Stop Loss cap ($8.00 USD max per [XAU-RULE-09] & [XAU-RULE-12])
 MIN_GOLD_RR_RATIO = 1.50      # Minimum Risk:Reward ratio required to issue Buy/Sell setup
 MIN_HEADROOM_ATR_MULT = 1.50  # Must have at least 1.5x ATR space before nearest downside obstacle
@@ -186,43 +188,99 @@ def calculate_fibonacci_retracement(
 
 def check_fibo_confluence(zone_high: float, zone_low: float, fibo_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Checks if a Demand/Supply Zone overlaps or touches the Fibonacci Golden Zone (61.8% - 78.6%).
+    Evaluates Fibonacci retracement support for a Demand/Supply Zone:
+    - Tier 1 (GOLDEN_ZONE): Overlaps 61.8% - 78.6% (has_confluence=True, has_ok_fibo=True)
+    - Tier 2 (TREND_PULLBACK): Overlaps 38.2% - 61.8% band including 38.2% & 50.0% (has_confluence=False, has_ok_fibo=True)
+    - NONE: Shallower than 38.2% (e.g. above 23.6%) or beyond 78.6% (has_confluence=False, has_ok_fibo=False)
     """
     if not fibo_data or "golden_zone_high" not in fibo_data:
-        return {"has_confluence": False, "overlap_pct": 0.0, "reason": "No Fibo data"}
+        return {
+            "has_confluence": False,
+            "has_ok_fibo": False,
+            "fibo_tier": "NONE",
+            "overlap_pct": 0.0,
+            "reason": "No Fibo data",
+        }
 
-    gz_high = max(fibo_data["golden_zone_high"], fibo_data["golden_zone_low"])
-    gz_low = min(fibo_data["golden_zone_high"], fibo_data["golden_zone_low"])
+    gz_high = max(float(fibo_data["golden_zone_high"]), float(fibo_data["golden_zone_low"]))
+    gz_low = min(float(fibo_data["golden_zone_high"]), float(fibo_data["golden_zone_low"]))
     label = fibo_data.get("label", "")
+    fibo_dir = fibo_data.get("direction", "UP")
     fibo_650 = fibo_data.get("fibo_650")
+    fibo_618 = fibo_data.get("fibo_618")
+    fibo_500 = fibo_data.get("fibo_500")
+    fibo_382 = fibo_data.get("fibo_382")
 
-    overlap_low = max(zone_low, gz_low)
-    overlap_high = min(zone_high, gz_high)
+    z_low = min(float(zone_low), float(zone_high))
+    z_high = max(float(zone_low), float(zone_high))
+    zone_size = max(z_high - z_low, 0.01)
 
+    # 1. Check Golden Zone (61.8% - 78.6%)
+    overlap_low = max(z_low, gz_low)
+    overlap_high = min(z_high, gz_high)
     if overlap_high >= overlap_low:
         overlap_size = overlap_high - overlap_low
-        zone_size = max(zone_high - zone_low, 0.01)
         overlap_pct = min(round((overlap_size / zone_size) * 100.0, 1), 100.0)
+        target_lv = fibo_650 if (fibo_650 is not None and z_low <= float(fibo_650) <= z_high) else round((overlap_high + overlap_low) / 2.0, 2)
         return {
             "has_confluence": True,
+            "has_ok_fibo": True,
+            "fibo_tier": "GOLDEN_ZONE",
             "fibo_label": label,
-            "fibo_direction": fibo_data.get("direction", "UP"),
+            "fibo_direction": fibo_dir,
             "fibo_650": fibo_650,
+            "fibo_target_level": round(float(target_lv), 2),
             "overlap_high": round(overlap_high, 2),
             "overlap_low": round(overlap_low, 2),
             "overlap_mid": round((overlap_high + overlap_low) / 2.0, 2),
             "overlap_pct": overlap_pct,
-            "reason": f"ซ้อนทับ {label} Golden Zone ({overlap_low:.2f} - {overlap_high:.2f}) {overlap_pct}%"
+            "reason": f"ซ้อนทับ {label} Golden Zone 61.8%-78.6% ({overlap_low:.2f} - {overlap_high:.2f}) {overlap_pct}%",
         }
 
-    dist = min(abs(zone_low - gz_high), abs(zone_high - gz_low))
+    # 2. Check OK Trend Pullback Fibo Zone (38.2% - 61.8%, covering 38.2% & 50.0% without gap to 61.8%)
+    if fibo_382 is not None and fibo_618 is not None:
+        pb_low = min(float(fibo_382), float(fibo_618))
+        pb_high = max(float(fibo_382), float(fibo_618))
+        pb_ov_low = max(z_low, pb_low)
+        pb_ov_high = min(z_high, pb_high)
+        if pb_ov_high >= pb_ov_low:
+            pb_ov_size = pb_ov_high - pb_ov_low
+            pb_ov_pct = min(round((pb_ov_size / zone_size) * 100.0, 1), 100.0)
+            pb_mid = round((pb_ov_high + pb_ov_low) / 2.0, 2)
+            if fibo_500 is not None and z_low <= float(fibo_500) <= z_high:
+                target_lv = round(float(fibo_500), 2)
+                lv_tag = "50.0%"
+            elif fibo_382 is not None and z_low <= float(fibo_382) <= z_high:
+                target_lv = round(float(fibo_382), 2)
+                lv_tag = "38.2%"
+            else:
+                target_lv = pb_mid
+                lv_tag = "38.2%-50.0%"
+            return {
+                "has_confluence": False,
+                "has_ok_fibo": True,
+                "fibo_tier": "TREND_PULLBACK",
+                "fibo_label": label,
+                "fibo_direction": fibo_dir,
+                "fibo_650": fibo_650,
+                "fibo_target_level": target_lv,
+                "overlap_high": round(pb_ov_high, 2),
+                "overlap_low": round(pb_ov_low, 2),
+                "overlap_mid": pb_mid,
+                "overlap_pct": pb_ov_pct,
+                "reason": f"ซ้อนทับ {label} Fibo Pullback {lv_tag} ({pb_ov_low:.2f} - {pb_ov_high:.2f}) {pb_ov_pct}%",
+            }
+
+    dist = min(abs(z_low - gz_high), abs(z_high - gz_low))
     return {
         "has_confluence": False,
+        "has_ok_fibo": False,
+        "fibo_tier": "NONE",
         "fibo_label": label,
-        "fibo_direction": fibo_data.get("direction", "UP"),
+        "fibo_direction": fibo_dir,
         "overlap_pct": 0.0,
         "distance": round(dist, 2),
-        "reason": f"ไม่ซ้อนทับ {label} Golden Zone (ห่าง {dist:.2f} USD)"
+        "reason": f"ไม่ซ้อนทับ {label} Fibo 38.2%-78.6% (ห่าง Golden Zone {dist:.2f} USD)",
     }
 
 
@@ -698,10 +756,10 @@ def scan_gold_setup() -> Dict[str, Any]:
     symbol = "XAUUSD"
     resolved = adapter._resolve_symbol(symbol) or "XAUUSDc"
 
-    bars_5m = adapter.get_bars(symbol, TimeFrame.M5, limit=120) or []
-    bars_15m = adapter.get_bars(symbol, TimeFrame.M15, limit=200) or []
-    bars_h1 = adapter.get_bars(symbol, TimeFrame.H1, limit=120) or []
-    bars_day = adapter.get_bars(symbol, TimeFrame.DAY, limit=100) or []
+    bars_5m = adapter.get_bars(resolved, TimeFrame.M5, limit=120) or []
+    bars_15m = adapter.get_bars(resolved, TimeFrame.M15, limit=200) or []
+    bars_h1 = adapter.get_bars(resolved, TimeFrame.H1, limit=120) or []
+    bars_day = adapter.get_bars(resolved, TimeFrame.DAY, limit=100) or []
 
     current_price = 2650.0
     if bars_5m:
@@ -709,7 +767,7 @@ def scan_gold_setup() -> Dict[str, Any]:
     elif bars_15m:
         current_price = bars_15m[-1].close
 
-    quote = adapter.get_latest_quote(symbol) or {}
+    quote = adapter.get_latest_quote(resolved) or {}
     live_spread = float(quote.get("spread") or 0.20)
     if live_spread < 0:
         live_spread = 0.20
@@ -738,14 +796,28 @@ def scan_gold_setup() -> Dict[str, Any]:
     strong_bull_trend = (h1_trend == "BULLISH" and m15_trend == "BULLISH")
     strong_bear_trend = (h1_trend == "BEARISH" and m15_trend == "BEARISH")
 
+    # Zero-look-ahead Swing Market Structure (HH/HL/LH/LL + live BOS/CHoCH)
+    m15_structure = analyze_market_structure(bars_15m, n_fractal=3) if bars_15m else {
+        "bias": "NEUTRAL", "swing_bias": "NEUTRAL", "pattern": "INSUFFICIENT",
+        "live_break": "NONE", "last_sh": None, "last_sl": None,
+    }
+    h1_structure = analyze_market_structure(bars_h1, n_fractal=3) if bars_h1 else {
+        "bias": "NEUTRAL", "swing_bias": "NEUTRAL", "pattern": "INSUFFICIENT",
+        "live_break": "NONE", "last_sh": None, "last_sl": None,
+    }
+    m15_choch_bear = (m15_structure.get("live_break") == "CHOCH_BEAR")
+    m15_choch_bull = (m15_structure.get("live_break") == "CHOCH_BULL")
+
     # 1. Session Detection
     eval_time = bars_15m[-1].close_time if (bars_15m and hasattr(bars_15m[-1], "close_time")) else None
     session_info = detect_trading_session(eval_time)
 
-    # 2. Support / Resistance & Role Reversal (M15 + Daily Structural Levels)
+    # 2. Support / Resistance & Role Reversal (M15 + H1 + Daily Structural Levels)
     sr_zones = build_sr_zones("XAUUSD", bars_15m, n_fractal=4, atr_multiplier=0.4) if bars_15m else []
+    h1_sr_zones = build_sr_zones("XAUUSD", bars_h1, n_fractal=3, atr_multiplier=0.4) if len(bars_h1) >= 20 else []
     day_sr_zones = build_sr_zones("XAUUSD", bars_day, n_fractal=3, atr_multiplier=0.35) if len(bars_day) >= 25 else []
     role_reversals = [z for z in sr_zones if z.is_role_reversed and z.is_active]
+    h1_macro_role_reversals = [z for z in (h1_sr_zones + day_sr_zones) if z.is_role_reversed and z.is_active]
 
     m15_supports = [
         {
@@ -851,8 +923,8 @@ def scan_gold_setup() -> Dict[str, Any]:
     double_confluence_active = False
 
     for d in demands:
-        maj_c = check_fibo_confluence(d["zone_high"], d["zone_low"], major_fibo_up) if major_fibo_up else {"has_confluence": False}
-        min_c = check_fibo_confluence(d["zone_high"], d["zone_low"], minor_fibo_up) if minor_fibo_up else {"has_confluence": False}
+        maj_c = check_fibo_confluence(d["zone_high"], d["zone_low"], major_fibo_up) if major_fibo_up else {"has_confluence": False, "has_ok_fibo": False, "fibo_tier": "NONE"}
+        min_c = check_fibo_confluence(d["zone_high"], d["zone_low"], minor_fibo_up) if minor_fibo_up else {"has_confluence": False, "has_ok_fibo": False, "fibo_tier": "NONE"}
         if maj_c.get("has_confluence") and min_c.get("has_confluence") and major_fibo_up != minor_fibo_up:
             conf = dict(min_c)
             conf["double_confluence"] = True
@@ -864,14 +936,26 @@ def scan_gold_setup() -> Dict[str, Any]:
         elif maj_c.get("has_confluence"):
             conf = dict(maj_c)
             conf["double_confluence"] = False
+        elif min_c.get("has_ok_fibo"):
+            conf = dict(min_c)
+            conf["double_confluence"] = False
+        elif maj_c.get("has_ok_fibo"):
+            conf = dict(maj_c)
+            conf["double_confluence"] = False
         else:
-            conf = min_c if minor_fibo_up else maj_c
+            conf = dict(min_c if minor_fibo_up else maj_c)
             conf["double_confluence"] = False
         d["fibo_confluence"] = conf
+        rr_tol = current_atr * 0.25
+        d["is_h1_role_reversal"] = any(
+            rr.zone_type == "RESISTANCE"
+            and max(d["zone_low"], rr.price_low - rr_tol) <= min(d["zone_high"], rr.price_high + rr_tol)
+            for rr in h1_macro_role_reversals
+        )
 
     for s in supplies:
-        maj_c = check_fibo_confluence(s["zone_high"], s["zone_low"], major_fibo_down) if major_fibo_down else {"has_confluence": False}
-        min_c = check_fibo_confluence(s["zone_high"], s["zone_low"], minor_fibo_down) if minor_fibo_down else {"has_confluence": False}
+        maj_c = check_fibo_confluence(s["zone_high"], s["zone_low"], major_fibo_down) if major_fibo_down else {"has_confluence": False, "has_ok_fibo": False, "fibo_tier": "NONE"}
+        min_c = check_fibo_confluence(s["zone_high"], s["zone_low"], minor_fibo_down) if minor_fibo_down else {"has_confluence": False, "has_ok_fibo": False, "fibo_tier": "NONE"}
         if maj_c.get("has_confluence") and min_c.get("has_confluence") and major_fibo_down != minor_fibo_down:
             conf = dict(min_c)
             conf["double_confluence"] = True
@@ -883,10 +967,22 @@ def scan_gold_setup() -> Dict[str, Any]:
         elif maj_c.get("has_confluence"):
             conf = dict(maj_c)
             conf["double_confluence"] = False
+        elif min_c.get("has_ok_fibo"):
+            conf = dict(min_c)
+            conf["double_confluence"] = False
+        elif maj_c.get("has_ok_fibo"):
+            conf = dict(maj_c)
+            conf["double_confluence"] = False
         else:
-            conf = min_c if minor_fibo_down else maj_c
+            conf = dict(min_c if minor_fibo_down else maj_c)
             conf["double_confluence"] = False
         s["fibo_confluence"] = conf
+        rr_tol = current_atr * 0.25
+        s["is_h1_role_reversal"] = any(
+            rr.zone_type == "SUPPORT"
+            and max(s["zone_low"], rr.price_low - rr_tol) <= min(s["zone_high"], rr.price_high + rr_tol)
+            for rr in h1_macro_role_reversals
+        )
 
     best_fibo_buy = minor_fibo_up or major_fibo_up
     best_fibo_sell = minor_fibo_down or major_fibo_down
@@ -1027,9 +1123,18 @@ def scan_gold_setup() -> Dict[str, Any]:
             reward_usd = target_tp - current_price
             rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
 
-            # Compute Smart Buy Limit candidate inside zone (OTE 65% if aligned, else zone_mid)
+            # Compute Smart Buy Limit candidate inside zone (OTE 65% / Fibo 38.2-50% target if aligned, else zone_mid)
             zone_conf = nearest_demand.get("fibo_confluence", {})
-            fibo_cand = zone_conf.get("fibo_650") if zone_conf.get("has_confluence") else None
+            fibo_cand = (
+                zone_conf.get("fibo_650")
+                if zone_conf.get("has_confluence")
+                else zone_conf.get("fibo_target_level")
+            )
+            has_limit_fibo_or_rr = bool(
+                zone_conf.get("has_ok_fibo")
+                or zone_conf.get("has_confluence")
+                or nearest_demand.get("is_h1_role_reversal")
+            )
             limit_entry_candidate = fibo_cand or nearest_demand.get("zone_mid") or (nearest_demand["zone_low"] + current_atr * 0.25)
             limit_entry = min(max(limit_entry_candidate, nearest_demand["zone_low"]), nearest_demand["zone_high"])
             # Ensure BUY LIMIT is strictly below current price; if current_price is already deep inside zone, step slightly below current_price
@@ -1041,11 +1146,13 @@ def scan_gold_setup() -> Dict[str, Any]:
             limit_rew_dist = target_tp - limit_entry
             limit_rr = (limit_rew_dist / limit_sl_dist) if limit_sl_dist > 0 else 0.0
             can_use_limit = (
-                limit_entry < current_price
-                and 0 < limit_sl_dist <= MAX_GOLD_SL_USD
+                has_limit_fibo_or_rr
+                and limit_entry < current_price
+                and MIN_GOLD_SL_USD <= limit_sl_dist <= MAX_GOLD_SL_USD
                 and limit_rr >= MIN_GOLD_RR_RATIO
                 and limit_headroom >= (current_atr * 1.0)
-                and not counter_trend_blocked
+                and not strong_bear_trend
+                and not m15_choch_bear
             )
 
             if has_rejection and not is_chasing_above_zone and not is_asian_session and 0 < sl_distance <= MAX_GOLD_SL_USD and rr_ratio >= MIN_GOLD_RR_RATIO:
@@ -1198,7 +1305,16 @@ def scan_gold_setup() -> Dict[str, Any]:
             rr_ratio = (reward_usd / risk_usd) if risk_usd > 0 else 0.0
 
             zone_conf = nearest_supply.get("fibo_confluence", {})
-            fibo_cand = zone_conf.get("fibo_650") if zone_conf.get("has_confluence") else None
+            fibo_cand = (
+                zone_conf.get("fibo_650")
+                if zone_conf.get("has_confluence")
+                else zone_conf.get("fibo_target_level")
+            )
+            has_limit_fibo_or_rr = bool(
+                zone_conf.get("has_ok_fibo")
+                or zone_conf.get("has_confluence")
+                or nearest_supply.get("is_h1_role_reversal")
+            )
             limit_entry_candidate = fibo_cand or nearest_supply.get("zone_mid") or (nearest_supply["zone_high"] - current_atr * 0.25)
             limit_entry = max(min(limit_entry_candidate, nearest_supply["zone_high"]), nearest_supply["zone_low"])
             if limit_entry <= current_price:
@@ -1209,11 +1325,13 @@ def scan_gold_setup() -> Dict[str, Any]:
             limit_rew_dist = limit_entry - target_tp
             limit_rr = (limit_rew_dist / limit_sl_dist) if limit_sl_dist > 0 else 0.0
             can_use_limit = (
-                limit_entry > current_price
-                and 0 < limit_sl_dist <= MAX_GOLD_SL_USD
+                has_limit_fibo_or_rr
+                and limit_entry > current_price
+                and MIN_GOLD_SL_USD <= limit_sl_dist <= MAX_GOLD_SL_USD
                 and limit_rr >= MIN_GOLD_RR_RATIO
                 and limit_down_headroom >= min_required_headroom
-                and not counter_trend_blocked
+                and not strong_bull_trend
+                and not m15_choch_bull
             )
 
             if has_rejection and not is_chasing_below_zone and not is_asian_session and 0 < sl_distance <= MAX_GOLD_SL_USD and rr_ratio >= MIN_GOLD_RR_RATIO:
@@ -1401,6 +1519,8 @@ def scan_gold_setup() -> Dict[str, Any]:
             "h1_ema50": h1_ema50_val,
             "trend": m15_trend,
             "h1_trend": h1_trend,
+            "m15_structure": m15_structure,
+            "h1_structure": h1_structure,
         },
         "session_info": session_info,
         "demand_zones": demands,

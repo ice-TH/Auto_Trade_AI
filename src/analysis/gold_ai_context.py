@@ -21,6 +21,7 @@ from src.data.base import Bar, TimeFrame
 from src.data.mt5_adapter import MT5DataAdapter
 from src.execution.mt5_client import MT5Client, mt5_client
 from src.analysis.gold_strategy import (
+    MIN_GOLD_SL_USD,
     MAX_GOLD_SL_USD,
     MIN_GOLD_RR_RATIO,
     detect_demand_supply_zones,
@@ -526,6 +527,43 @@ def _zone_has_golden_confluence(
     return False
 
 
+def _zone_has_ok_fibo_or_h1_rr(
+    zone: Dict[str, Any],
+    fibo_data: Optional[Dict[str, Any]],
+) -> tuple[bool, Optional[float], str]:
+    """
+    Check if zone has at least Trend Pullback Fibo (38.2%-61.8%, covering 38.2% & 50.0%)
+    or H1 Role Reversal support.
+    Returns (is_supported, preferred_fibo_level_or_none, reason_tag).
+    """
+    if zone.get("is_h1_role_reversal"):
+        return True, None, "H1_ROLE_REVERSAL"
+    conf = zone.get("fibo_confluence") or {}
+    zl, zh = float(zone["zone_low"]), float(zone["zone_high"])
+    if conf.get("has_ok_fibo") or conf.get("fibo_tier") in ("GOLDEN_ZONE", "TREND_PULLBACK"):
+        tlv = conf.get("fibo_target_level") or conf.get("overlap_mid")
+        if tlv is not None and zl <= float(tlv) <= zh:
+            return True, round(float(tlv), 2), "TREND_PULLBACK_FIBO"
+        return True, None, "TREND_PULLBACK_FIBO"
+
+    if isinstance(fibo_data, dict):
+        f382 = fibo_data.get("fibo_382")
+        f500 = fibo_data.get("fibo_500")
+        f618 = fibo_data.get("fibo_618")
+        if f500 is not None and zl <= float(f500) <= zh:
+            return True, round(float(f500), 2), "TREND_PULLBACK_FIBO"
+        if f382 is not None and zl <= float(f382) <= zh:
+            return True, round(float(f382), 2), "TREND_PULLBACK_FIBO"
+        if f382 is not None and f618 is not None:
+            pb_low = min(float(f382), float(f618))
+            pb_high = max(float(f382), float(f618))
+            ov_low = max(zl, pb_low)
+            ov_high = min(zh, pb_high)
+            if ov_high >= ov_low:
+                return True, round((ov_low + ov_high) / 2.0, 2), "TREND_PULLBACK_FIBO"
+    return False, None, "NO_FIBO_SUPPORT"
+
+
 def _evaluate_zone_limit_candidate(
     zone: Dict[str, Any],
     direction: str,
@@ -544,7 +582,10 @@ def _evaluate_zone_limit_candidate(
     zmid = round((zl + zh) / 2.0, 2)
     conf = zone.get("fibo_confluence") or {}
     has_conf = _zone_has_golden_confluence(zone, fibo_data)
+    has_ok_fibo, pb_target, support_tag = _zone_has_ok_fibo_or_h1_rr(zone, fibo_data)
     is_double = bool(conf.get("double_confluence", False))
+    fibo_supported = bool(has_conf or has_ok_fibo or entry_tier != "NO_FIBO_SUPPORT")
+    gate_reason = "OK"
 
     if entry_tier in ("GOLDEN_ZONE_CONFLUENCE", "NEARBY_GOLDEN_ZONE_SHIFT"):
         ov_low = float(conf.get("overlap_low", zl))
@@ -560,23 +601,30 @@ def _evaluate_zone_limit_candidate(
         else:
             raw_entry = zmid
         confirmation_policy = "IMMEDIATE_LIMIT_RELAXED"
+    elif entry_tier in ("TREND_PULLBACK_FIBO", "NEARBY_PULLBACK_FIBO_SHIFT", "H1_ROLE_REVERSAL"):
+        if pb_target is not None and zl <= pb_target <= zh:
+            raw_entry = pb_target
+        else:
+            depth_ratio = 0.35
+            raw_entry = round(zl + width * depth_ratio, 2) if direction == "BUY" else round(zh - width * depth_ratio, 2)
+        confirmation_policy = "LIMIT_H1_ROLE_REVERSAL" if support_tag == "H1_ROLE_REVERSAL" else "LIMIT_FIBO_PULLBACK_WITH_KNIFE_GUARD"
     else:
-        # Non-confluent zone: place deeper (35% from deep edge, or 25% if Golden Zone sits just outside edge)
         depth_ratio = 0.35
-        if isinstance(fibo_data, dict) and "golden_zone_high" in fibo_data and "golden_zone_low" in fibo_data:
-            gz_high = max(float(fibo_data["golden_zone_high"]), float(fibo_data["golden_zone_low"]))
-            gz_low = min(float(fibo_data["golden_zone_high"]), float(fibo_data["golden_zone_low"]))
-            edge_dist = abs(zl - gz_high) if direction == "BUY" else abs(gz_low - zh)
-            if edge_dist <= (0.50 * safe_atr):
-                depth_ratio = 0.25
         raw_entry = round(zl + width * depth_ratio, 2) if direction == "BUY" else round(zh - width * depth_ratio, 2)
-        confirmation_policy = "LIMIT_DEEP_WITH_KNIFE_GUARD"
+        confirmation_policy = "BLOCKED_SHALLOW_NO_FIBO"
+        fibo_supported = False
+        gate_reason = "ไม่มีแนว Fibo 38.2%-78.6% หรือ H1 Role Reversal รองรับ (โซนตื้นเกินไป ห้ามตั้ง Blind Limit)"
 
     if direction == "BUY":
         sl = round(zl - moat, 2)
         safe_bound = round(sl + MAX_GOLD_SL_USD - 0.05, 2)
         entry = round(min(raw_entry, safe_bound, zh), 2)
+        if (entry - sl) < MIN_GOLD_SL_USD:
+            sl = round(entry - MIN_GOLD_SL_USD, 2)
         sl_dist = round(entry - sl, 2)
+        clamped_to_sl_cap = (raw_entry - entry) > 2.50
+        if clamped_to_sl_cap:
+            gate_reason = "โซนกว้างเกินเพดาน SL $8.00 (จุดเข้าถูกบีบหลุดแนว Fibo — ให้รอ micro_buy_limit บนฐาน M5 แทน)"
         tp_cap = (
             round(float(opp_zone["zone_low"]) - min(safe_atr * 0.25, 1.50), 2)
             if opp_zone and float(opp_zone["zone_low"]) > entry
@@ -592,15 +640,20 @@ def _evaluate_zone_limit_candidate(
             "sl_distance_usd": sl_dist,
             "rr_ratio": rr,
             "max_safe_entry_for_8usd_sl": safe_bound,
+            "clamped_to_sl_cap": clamped_to_sl_cap,
             "below_current_price": side_valid,
             "passes_hard_gate": bool(
-                side_valid
-                and (0.20 <= sl_dist <= MAX_GOLD_SL_USD)
+                fibo_supported
+                and (not clamped_to_sl_cap)
+                and side_valid
+                and (MIN_GOLD_SL_USD <= sl_dist <= MAX_GOLD_SL_USD)
                 and (rr >= MIN_GOLD_RR_RATIO)
                 and (zl <= entry <= zh)
             ),
+            "gate_reason": gate_reason,
             "entry_tier": entry_tier,
             "has_fibo_confluence": has_conf,
+            "has_ok_fibo": bool(has_conf or has_ok_fibo),
             "double_confluence": is_double,
             "shifted_from_nearest": shifted_from_nearest,
             "confirmation_policy": confirmation_policy,
@@ -612,7 +665,12 @@ def _evaluate_zone_limit_candidate(
     sl = round(zh + moat + max(spread, 0.0), 2)
     safe_bound = round(sl - MAX_GOLD_SL_USD + 0.05, 2)
     entry = round(max(raw_entry, safe_bound, zl), 2)
+    if (sl - entry) < MIN_GOLD_SL_USD:
+        sl = round(entry + MIN_GOLD_SL_USD, 2)
     sl_dist = round(sl - entry, 2)
+    clamped_to_sl_cap = (entry - raw_entry) > 2.50
+    if clamped_to_sl_cap:
+        gate_reason = "โซนกว้างเกินเพดาน SL $8.00 (จุดเข้าถูกบีบหลุดแนว Fibo — ให้รอ micro_sell_limit บนฐาน M5 แทน)"
     tp_cap = (
         round(float(opp_zone["zone_high"]) + min(safe_atr * 0.25, 1.50), 2)
         if opp_zone and float(opp_zone["zone_high"]) < entry
@@ -628,15 +686,20 @@ def _evaluate_zone_limit_candidate(
         "sl_distance_usd": sl_dist,
         "rr_ratio": rr,
         "min_safe_entry_for_8usd_sl": safe_bound,
+        "clamped_to_sl_cap": clamped_to_sl_cap,
         "above_current_price": side_valid,
         "passes_hard_gate": bool(
-            side_valid
-            and (0.20 <= sl_dist <= MAX_GOLD_SL_USD)
+            fibo_supported
+            and (not clamped_to_sl_cap)
+            and side_valid
+            and (MIN_GOLD_SL_USD <= sl_dist <= MAX_GOLD_SL_USD)
             and (rr >= MIN_GOLD_RR_RATIO)
             and (zl <= entry <= zh)
         ),
+        "gate_reason": gate_reason,
         "entry_tier": entry_tier,
         "has_fibo_confluence": has_conf,
+        "has_ok_fibo": bool(has_conf or has_ok_fibo),
         "double_confluence": is_double,
         "shifted_from_nearest": shifted_from_nearest,
         "confirmation_policy": confirmation_policy,
@@ -658,10 +721,11 @@ def _select_fibo_prioritized_zone_candidate(
     opp_zone: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     """
-    3-Tier Limit-First selection:
-    1) GOLDEN_ZONE_CONFLUENCE: primary zone overlaps Fibo Golden Zone.
+    4-Tier Fibo-Guarded Limit-First selection:
+    1) GOLDEN_ZONE_CONFLUENCE: primary zone overlaps Fibo Golden Zone (61.8% - 78.6%).
     2) NEARBY_GOLDEN_ZONE_SHIFT: nearby zone (<= max(1.5x ATR, $10)) overlaps Fibo Golden Zone and passes Hard Gate.
-    3) DEEP_ZONE_DISCOUNT: fallback to primary zone with deeper (35%/25%) placement.
+    3) TREND_PULLBACK_FIBO / H1_ROLE_REVERSAL: primary (or nearby <= 1.5x ATR) zone overlaps Fibo 38.2%-61.8% or H1 Role Reversal.
+    4) NO_FIBO_SUPPORT: shallow zone without Fibo 38.2%-78.6% or H1 Role Reversal -> blocked (passes_hard_gate=False).
     """
     if not primary_zone:
         return None
@@ -681,14 +745,13 @@ def _select_fibo_prioritized_zone_candidate(
         )
 
     max_shift_dist = max(1.50 * safe_atr, 10.0)
-    nearby_candidates: List[tuple[float, Dict[str, Any]]] = []
+    nearby_golden: List[tuple[float, Dict[str, Any]]] = []
+    nearby_pullback: List[tuple[float, Dict[str, Any], str]] = []
     for z in all_zones or []:
         if z is primary_zone or (
             float(z["zone_low"]) == float(primary_zone["zone_low"])
             and float(z["zone_high"]) == float(primary_zone["zone_high"])
         ):
-            continue
-        if not _zone_has_golden_confluence(z, fibo_data):
             continue
         zl, zh = float(z["zone_low"]), float(z["zone_high"])
         if curr_price > 0:
@@ -701,10 +764,16 @@ def _select_fibo_prioritized_zone_candidate(
                 continue
         else:
             dist = 0.0
-        nearby_candidates.append((dist, z))
 
-    nearby_candidates.sort(key=lambda item: item[0])
-    for _, nz in nearby_candidates:
+        if _zone_has_golden_confluence(z, fibo_data):
+            nearby_golden.append((dist, z))
+        else:
+            ok_pb, _, pb_tag = _zone_has_ok_fibo_or_h1_rr(z, fibo_data)
+            if ok_pb:
+                nearby_pullback.append((dist, z, pb_tag))
+
+    nearby_golden.sort(key=lambda item: item[0])
+    for _, nz in nearby_golden:
         cand = _evaluate_zone_limit_candidate(
             zone=nz,
             direction=direction,
@@ -720,6 +789,39 @@ def _select_fibo_prioritized_zone_candidate(
         if cand["passes_hard_gate"]:
             return cand
 
+    prim_ok, _, prim_tag = _zone_has_ok_fibo_or_h1_rr(primary_zone, fibo_data)
+    if prim_ok:
+        tier_name = "H1_ROLE_REVERSAL" if prim_tag == "H1_ROLE_REVERSAL" else "TREND_PULLBACK_FIBO"
+        return _evaluate_zone_limit_candidate(
+            zone=primary_zone,
+            direction=direction,
+            curr_price=curr_price,
+            safe_atr=safe_atr,
+            moat=moat,
+            spread=spread,
+            fibo_data=fibo_data,
+            opp_zone=opp_zone,
+            entry_tier=tier_name,
+            shifted_from_nearest=False,
+        )
+
+    nearby_pullback.sort(key=lambda item: item[0])
+    for _, nz, pb_tag in nearby_pullback:
+        cand = _evaluate_zone_limit_candidate(
+            zone=nz,
+            direction=direction,
+            curr_price=curr_price,
+            safe_atr=safe_atr,
+            moat=moat,
+            spread=spread,
+            fibo_data=fibo_data,
+            opp_zone=opp_zone,
+            entry_tier="H1_ROLE_REVERSAL" if pb_tag == "H1_ROLE_REVERSAL" else "NEARBY_PULLBACK_FIBO_SHIFT",
+            shifted_from_nearest=True,
+        )
+        if cand["passes_hard_gate"]:
+            return cand
+
     return _evaluate_zone_limit_candidate(
         zone=primary_zone,
         direction=direction,
@@ -729,7 +831,7 @@ def _select_fibo_prioritized_zone_candidate(
         spread=spread,
         fibo_data=fibo_data,
         opp_zone=opp_zone,
-        entry_tier="DEEP_ZONE_DISCOUNT",
+        entry_tier="NO_FIBO_SUPPORT",
         shifted_from_nearest=False,
     )
 
@@ -747,6 +849,7 @@ def _build_limit_entry_candidates(
     nearest_m5_supply: Optional[Dict[str, Any]] = None,
     demand_zones: Optional[List[Dict[str, Any]]] = None,
     supply_zones: Optional[List[Dict[str, Any]]] = None,
+    trend_indicators: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Pre-calculate Hard-Risk-Gate-compliant Limit prices inside Demand/Supply zones
@@ -767,6 +870,15 @@ def _build_limit_entry_candidates(
     moat = min(max(safe_atr * 0.18, 0.80), 1.80)
     micro_moat = min(max(safe_atr * 0.14, 0.80), 1.50)
 
+    ti = trend_indicators or {}
+    m15_tr = str(ti.get("trend", "NEUTRAL")).upper()
+    h1_tr = str(ti.get("h1_trend", "NEUTRAL")).upper()
+    strong_bull = (h1_tr == "BULLISH" and m15_tr == "BULLISH")
+    strong_bear = (h1_tr == "BEARISH" and m15_tr == "BEARISH")
+    m15_struct = ti.get("m15_structure") or {}
+    m15_choch_bear = str(m15_struct.get("live_break", "NONE")).upper() == "CHOCH_BEAR"
+    m15_choch_bull = str(m15_struct.get("live_break", "NONE")).upper() == "CHOCH_BULL"
+
     if nearest_demand:
         zl, zh = float(nearest_demand["zone_low"]), float(nearest_demand["zone_high"])
         buy_cand = _select_fibo_prioritized_zone_candidate(
@@ -780,6 +892,14 @@ def _build_limit_entry_candidates(
             fibo_data=fibo_buy,
             opp_zone=nearest_supply,
         )
+        if buy_cand and strong_bear:
+            buy_cand["passes_hard_gate"] = False
+            buy_cand["gate_reason"] = "ห้ามวาง Blind Buy Limit สวนเทรนด์หลักขาลง (H1+M15 BEARISH) — ต้องรอแท่งกลับตัวเท่านั้น"
+            buy_cand["confirmation_policy"] = "BLOCKED_COUNTER_TREND_BLIND_LIMIT"
+        elif buy_cand and m15_choch_bear:
+            buy_cand["passes_hard_gate"] = False
+            buy_cand["gate_reason"] = "ห้ามวาง Blind Buy Limit: M15 เพิ่งปิดแท่งเสียโครงสร้างขาขึ้น (CHoCH Bearish หลุด Swing Low ล่าสุด) — ต้องรอแท่งยืนยันการกลับตัวเท่านั้น"
+            buy_cand["confirmation_policy"] = "BLOCKED_M15_CHOCH_COUNTER_TREND"
         out["buy_limit_zone"] = buy_cand
         entry = buy_cand["entry"]
 
@@ -835,6 +955,14 @@ def _build_limit_entry_candidates(
             opp_zone=nearest_demand,
         )
         out["sell_limit_zone"] = sell_cand
+        if sell_cand and strong_bull:
+            sell_cand["passes_hard_gate"] = False
+            sell_cand["gate_reason"] = "ห้ามวาง Blind Sell Limit สวนเทรนด์หลักขาขึ้น (H1+M15 BULLISH) — ต้องรอแท่งกลับตัวเท่านั้น"
+            sell_cand["confirmation_policy"] = "BLOCKED_COUNTER_TREND_BLIND_LIMIT"
+        elif sell_cand and m15_choch_bull:
+            sell_cand["passes_hard_gate"] = False
+            sell_cand["gate_reason"] = "ห้ามวาง Blind Sell Limit: M15 เพิ่งปิดแท่งเสียโครงสร้างขาลง (CHoCH Bullish ทะลุ Swing High ล่าสุด) — ต้องรอแท่งยืนยันการกลับตัวเท่านั้น"
+            sell_cand["confirmation_policy"] = "BLOCKED_M15_CHOCH_COUNTER_TREND"
         entry = sell_cand["entry"]
 
         # Micro-Structure Sell Limit for Wide Supply Zones
@@ -1122,6 +1250,7 @@ def build_gold_ai_context(
                 nearest_m5_supply=m5_zone_map["nearest_m5_supply"],
                 demand_zones=demands,
                 supply_zones=supplies,
+                trend_indicators=setup.get("trend_indicators"),
             ),
             "ea_advisory_reference": {
                 "ea_status": setup.get("status"),

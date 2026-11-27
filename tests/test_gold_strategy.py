@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 from src.data.base import Bar, TimeFrame
 from src.analysis.gold_strategy import (
     calculate_fibonacci_retracement,
+    check_fibo_confluence,
     clamp_zone_size,
     detect_trading_session,
     detect_demand_supply_zones,
@@ -10,6 +11,36 @@ from src.analysis.gold_strategy import (
     MAX_GOLD_SL_USD,
     MIN_GOLD_RR_RATIO,
 )
+
+
+def test_fibo_confluence_tiers_golden_pullback_and_shallow_rejection():
+    # UP impulse: 3558 -> 3679 (diff = 121)
+    # 23.6% = 3650.44 | 38.2% = 3632.78 | 50.0% = 3618.50 | 61.8% = 3604.22 | 78.6% = 3583.89
+    fib_up = calculate_fibonacci_retracement(3679.0, 3558.0, label="Minor", direction="UP")
+
+    # 1. Shallow Demand @ [3652.81, 3665.82] (above 23.6% = 3650.44) -> NONE (has_ok_fibo=False)
+    shallow = check_fibo_confluence(3665.82, 3652.81, fib_up)
+    assert shallow["fibo_tier"] == "NONE"
+    assert shallow["has_confluence"] is False
+    assert shallow["has_ok_fibo"] is False
+
+    # 2. Pullback Demand @ [3616.00, 3622.00] (contains 50.0% = 3618.50) -> TREND_PULLBACK (has_ok_fibo=True)
+    pb_50 = check_fibo_confluence(3622.00, 3616.00, fib_up)
+    assert pb_50["fibo_tier"] == "TREND_PULLBACK"
+    assert pb_50["has_confluence"] is False
+    assert pb_50["has_ok_fibo"] is True
+    assert pb_50["fibo_target_level"] == 3618.50
+
+    # 3. Zone between 50% and 61.8% [3606.00, 3612.00] -> No gap! Still TREND_PULLBACK
+    pb_mid = check_fibo_confluence(3612.00, 3606.00, fib_up)
+    assert pb_mid["fibo_tier"] == "TREND_PULLBACK"
+    assert pb_mid["has_ok_fibo"] is True
+
+    # 4. Golden Zone Demand @ [3595.00, 3603.00] -> GOLDEN_ZONE (has_confluence=True, has_ok_fibo=True)
+    gz = check_fibo_confluence(3603.00, 3595.00, fib_up)
+    assert gz["fibo_tier"] == "GOLDEN_ZONE"
+    assert gz["has_confluence"] is True
+    assert gz["has_ok_fibo"] is True
 
 
 def test_directional_fibonacci_up_vs_down():
