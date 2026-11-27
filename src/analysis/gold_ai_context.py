@@ -1235,6 +1235,8 @@ def build_gold_ai_context(
             "m5_supply_zones": m5_zone_map["m5_supply_zones"],
             "fibo_buy_discount": setup.get("fibo_buy"),
             "fibo_sell_premium": setup.get("fibo_sell"),
+            "fibo_major": setup.get("major_fibo"),
+            "fibo_history_swings": setup.get("fibo_history", []),
             "double_confluence_active": setup.get("double_confluence_active", False),
             "approach_momentum": _evaluate_approach_momentum(bars_5m, curr_atr),
             "limit_entry_candidates": _build_limit_entry_candidates(

@@ -46,7 +46,7 @@ class ZigZagPivot:
     pivot_type: int  # 1 = HIGH, -1 = LOW
 
 
-def detect_zigzag_pivots(bars: List[Bar], pivot_legs: int = 8, min_deviation_pct: float = 0.8) -> List[ZigZagPivot]:
+def detect_zigzag_pivots(bars: List[Bar], pivot_legs: int = 10, min_deviation_pct: float = 1.0) -> List[ZigZagPivot]:
     """
     Robust ZigZag engine directly adapted from PineScript V3 (pinescript_FIBO_1.txt).
     - Requires pivot_legs bars on left and right
@@ -866,43 +866,39 @@ def scan_gold_setup() -> Dict[str, Any]:
     demands = sorted(all_demands, key=lambda d: abs(current_price - d["zone_high"]))
     supplies = sorted(all_supplies, key=lambda s: abs(current_price - s["zone_low"]))
 
-    # 4. Direction-Aware Multi-Swing Fibonacci Engine (PineScript V3 ZigZag with Hierarchy)
-    zz_pivots = detect_zigzag_pivots(bars_15m, pivot_legs=8, min_deviation_pct=0.8) if len(bars_15m) >= 20 else []
+    # 4. Direction-Aware Multi-Swing Fibonacci Engine (PineScript V3 ZigZag: pivot_legs=10, min_rev=1.0%, confirmed swings only)
+    zz_pivots = detect_zigzag_pivots(bars_15m, pivot_legs=10, min_deviation_pct=1.0) if len(bars_15m) >= 25 else []
     if len(zz_pivots) < 2 and len(bars_15m) >= 15:
-        zz_pivots = detect_zigzag_pivots(bars_15m, pivot_legs=5, min_deviation_pct=0.5)
+        zz_pivots = detect_zigzag_pivots(bars_15m, pivot_legs=6, min_deviation_pct=0.7)
 
     major_fibo_up: Dict[str, Any] = {}
     minor_fibo_up: Dict[str, Any] = {}
     major_fibo_down: Dict[str, Any] = {}
     minor_fibo_down: Dict[str, Any] = {}
+    fibo_history: List[Dict[str, Any]] = []
     swing_direction = "UP"
 
     if len(zz_pivots) >= 2:
-        last_p = zz_pivots[-1]
-        prev_p = zz_pivots[-2]
-
-        # Determine active minor impulse leg direction considering unconfirmed extreme since last pivot
-        bars_since_last = bars_15m[last_p.index:] if bars_15m and last_p.index < len(bars_15m) else []
-        if last_p.pivot_type == -1:
-            # Last confirmed pivot was a LOW -> price rallied afterward -> UP impulse (retracing down to Buy)
-            proj_high = max([b.high for b in bars_since_last], default=last_p.price)
-            if (proj_high - last_p.price) >= (current_atr * 2.0):
-                swing_direction = "UP"
-                minor_fibo_up = calculate_fibonacci_retracement(proj_high, last_p.price, label="Minor", direction="UP")
-            if (prev_p.price - last_p.price) >= (current_atr * 2.0):
-                minor_fibo_down = calculate_fibonacci_retracement(prev_p.price, last_p.price, label="Minor", direction="DOWN")
+        # Build confirmed historical swings (newest first, up to last 3 swings) so AI Trader can cross-check prior Fibos
+        for idx in range(len(zz_pivots) - 1, 0, -1):
+            p_end = zz_pivots[idx]
+            p_start = zz_pivots[idx - 1]
+            if p_end.pivot_type == 1 and p_start.pivot_type == -1 and (p_end.price - p_start.price) >= (current_atr * 2.0):
+                leg_fibo = calculate_fibonacci_retracement(p_end.price, p_start.price, label=f"ConfirmedSwing#{len(fibo_history)+1}", direction="UP")
+                fibo_history.append(leg_fibo)
                 if not minor_fibo_up:
-                    swing_direction = "DOWN"
-        else:
-            # Last confirmed pivot was a HIGH -> price dropped afterward -> DOWN impulse (retracing up to Sell)
-            proj_low = min([b.low for b in bars_since_last], default=last_p.price)
-            if (last_p.price - proj_low) >= (current_atr * 2.0):
-                swing_direction = "DOWN"
-                minor_fibo_down = calculate_fibonacci_retracement(last_p.price, proj_low, label="Minor", direction="DOWN")
-            if (last_p.price - prev_p.price) >= (current_atr * 2.0):
-                minor_fibo_up = calculate_fibonacci_retracement(last_p.price, prev_p.price, label="Minor", direction="UP")
+                    minor_fibo_up = calculate_fibonacci_retracement(p_end.price, p_start.price, label="Minor", direction="UP")
+            elif p_end.pivot_type == -1 and p_start.pivot_type == 1 and (p_start.price - p_end.price) >= (current_atr * 2.0):
+                leg_fibo = calculate_fibonacci_retracement(p_start.price, p_end.price, label=f"ConfirmedSwing#{len(fibo_history)+1}", direction="DOWN")
+                fibo_history.append(leg_fibo)
                 if not minor_fibo_down:
-                    swing_direction = "UP"
+                    minor_fibo_down = calculate_fibonacci_retracement(p_start.price, p_end.price, label="Minor", direction="DOWN")
+            if len(fibo_history) >= 3:
+                break
+
+        # Active direction follows the latest confirmed swing leg (no unconfirmed projected repaint)
+        last_p = zz_pivots[-1]
+        swing_direction = "UP" if last_p.pivot_type == 1 else "DOWN"
 
         # Major Swing (Macro High & Low with chronological direction)
         high_pivots = [p for p in zz_pivots if p.pivot_type == 1]
@@ -1532,6 +1528,7 @@ def scan_gold_setup() -> Dict[str, Any]:
         "fibo_sell": best_fibo_sell,
         "major_fibo": major_fibo,
         "minor_fibo": minor_fibo,
+        "fibo_history": fibo_history,
         "double_confluence_active": double_confluence_active,
         "role_reversal_count": len(role_reversals),
         "execution_mode": order_execution_mode,
