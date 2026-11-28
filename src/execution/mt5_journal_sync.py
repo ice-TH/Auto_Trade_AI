@@ -47,21 +47,62 @@ def get_connected_mt5_account_info() -> Dict[str, Any]:
     
     acc = mt5.account_info()
     if not acc:
-        mt5.shutdown()
         return {"connected": False, "error": "No account logged into MT5"}
     
-    info = {
+    is_cent = (acc.currency.upper() == "USC")
+    server_lower = (acc.server or "").lower()
+    is_demo = (not is_cent) and ("demo" in server_lower or "trial" in server_lower)
+    return {
         "connected": True,
         "login": str(acc.login),
         "server": acc.server,
         "currency": acc.currency,
         "balance": acc.balance,
         "equity": acc.equity,
-        "is_cent": (acc.currency.upper() == "USC"),
-        "is_demo": "demo" in acc.server.lower() or "trial" in acc.server.lower()
+        "is_cent": is_cent,
+        "is_demo": is_demo
     }
-    mt5.shutdown()
-    return info
+
+
+def ensure_portfolio_for_mt5_account(db: Session, mt5_info: Dict[str, Any]) -> Optional[PortfolioModel]:
+    """
+    Ensure a dedicated PortfolioModel exists for the given connected MT5 account.
+    Returns the matching portfolio (existing or newly created), or None if mt5_info is not connected.
+    """
+    if not mt5_info or not mt5_info.get("connected") or not mt5_info.get("login"):
+        return None
+
+    acc_login = str(mt5_info["login"])
+    existing = db.query(PortfolioModel).filter(PortfolioModel.account_login == acc_login).order_by(PortfolioModel.created_at.asc()).first()
+    if existing:
+        return existing
+
+    is_cent = bool(mt5_info.get("is_cent")) or str(mt5_info.get("currency", "")).upper() == "USC"
+    is_demo = bool(mt5_info.get("is_demo")) and not is_cent
+    acc_curr = "USC" if is_cent else (mt5_info.get("currency") or "USD")
+    acc_bal = round(float(mt5_info.get("balance") or 1000.0), 2)
+    if acc_bal <= 0:
+        acc_bal = 1000.0
+
+    acc_type_label = "REAL Cent" if is_cent else ("DEMO" if is_demo else "REAL")
+    port_id = f"port_{acc_login}"
+    if db.query(PortfolioModel).filter(PortfolioModel.id == port_id).first():
+        port_id = f"port_{acc_login}_mt5"
+
+    new_port = PortfolioModel(
+        id=port_id,
+        name=f"Exness MT5 #{acc_login} ({acc_type_label} {acc_curr})",
+        account_login=acc_login,
+        initial_capital=acc_bal,
+        risk_per_trade_percent=1.0,
+        currency=acc_curr,
+        description=f"พอร์ตแยกอัตโนมัติสำหรับบัญชี Exness MT5 #{acc_login} ({acc_type_label})"
+    )
+    db.add(new_port)
+    db.commit()
+    db.refresh(new_port)
+    logger.info(f"Auto-provisioned isolated portfolio '{new_port.id}' for MT5 account #{acc_login}")
+    return new_port
 
 def sync_mt5_deals_to_portfolio(
     portfolio_id: str,
@@ -80,20 +121,35 @@ def sync_mt5_deals_to_portfolio(
 
     port = db.query(PortfolioModel).filter(PortfolioModel.id == portfolio_id).first()
     if not port:
-        mt5.shutdown()
         return {"status": "ERROR", "message": f"Portfolio {portfolio_id} not found"}
 
-    now = datetime.now()
-    from_date = now - timedelta(days=days_back)
-    deals = mt5.history_deals_get(from_date, now)
     acc = mt5.account_info()
-    
     if acc is None:
-        mt5.shutdown()
         return {"status": "ERROR", "message": "MT5 account authorization required"}
 
     is_cent = (acc.currency.upper() == "USC")
     acc_login_str = str(acc.login)
+
+    # Strict Account Ownership Guard: NEVER overwrite or mix deals from another MT5 account
+    if port.account_login and port.account_login != "Default" and str(port.account_login) != acc_login_str:
+        logger.warning(
+            f"Blocked MT5 sync for portfolio '{portfolio_id}': "
+            f"portfolio account #{port.account_login} != connected MT5 #{acc_login_str}"
+        )
+        return {
+            "status": "ACCOUNT_MISMATCH",
+            "error_code": "ACCOUNT_MISMATCH",
+            "portfolio_account": str(port.account_login),
+            "connected_account": acc_login_str,
+            "message": (
+                f"ไม่สามารถซิงก์ได้: พอร์ตนี้ผูกกับบัญชี #{port.account_login} "
+                f"แต่ MT5 กำลังเชื่อมต่อบัญชี #{acc_login_str} อยู่ กรุณาสลับพอร์ตให้ตรงกับบัญชี MT5"
+            ),
+        }
+
+    now = datetime.now()
+    from_date = now - timedelta(days=days_back)
+    deals = mt5.history_deals_get(from_date, now) or []
 
     # Optional: Update portfolio account_login if empty
     if not port.account_login or port.account_login == "Default":
@@ -126,7 +182,6 @@ def sync_mt5_deals_to_portfolio(
     db.commit()
 
     if not deals:
-        mt5.shutdown()
         return {"status": "SUCCESS", "synced_count": 0, "message": "No deals found in specified range"}
 
     # Filter closing deals: entry == 1 (DEAL_ENTRY_OUT) and has symbol
@@ -249,7 +304,6 @@ def sync_mt5_deals_to_portfolio(
             synced_count += 1
 
     db.commit()
-    mt5.shutdown()
 
     return {
         "status": "SUCCESS",

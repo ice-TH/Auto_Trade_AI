@@ -28,7 +28,11 @@ from src.backtest.engine import BacktestEngine, TradeRecord
 from src.backtest.metrics import BacktestMetrics
 from src.execution.mt5_client import mt5_client
 from src.execution.reconciliation import order_reconciler
-from src.execution.mt5_journal_sync import sync_mt5_deals_to_portfolio, get_connected_mt5_account_info
+from src.execution.mt5_journal_sync import (
+    sync_mt5_deals_to_portfolio,
+    get_connected_mt5_account_info,
+    ensure_portfolio_for_mt5_account,
+)
 
 # Cache evaluated plans & backtest results
 cached_plans: Dict[str, TradingPlan] = {}
@@ -140,6 +144,8 @@ class SwitchSourceReq(BaseModel):
 @app.get("/api/data-source")
 def get_data_source_status():
     global active_adapter_type, data_adapter
+    if active_adapter_type == "MT5":
+        mt5_client.connect()
     connected = mt5_client.is_connected
     acc = mt5_client.account_info if connected else {}
     server_str = acc.get("server", "").lower()
@@ -433,10 +439,10 @@ def get_playbook():
     return {"content": get_playbook_content()}
 
 @app.get("/api/memory/cases")
-def get_cases(limit: int = Query(20, ge=1, le=100)):
-    """Retrieve closed cases and post-mortem lessons."""
+def get_cases(limit: int = Query(20, ge=1, le=100), account_login: Optional[str] = Query(default=None)):
+    """Retrieve closed cases and post-mortem lessons, optionally isolated by MT5 account."""
     from src.analysis.trade_reviewer import get_recent_cases
-    return {"cases": get_recent_cases(limit=limit)}
+    return {"cases": get_recent_cases(limit=limit, account_login=account_login)}
 
 @app.post("/api/memory/sync")
 def trigger_memory_sync():
@@ -887,33 +893,21 @@ class JournalTradeCreateReq(BaseModel):
 
 @app.get("/api/portfolios")
 def list_portfolios(db: Session = Depends(get_db)):
+    mt5_acc = get_connected_mt5_account_info()
+    active_mt5_login = str(mt5_acc["login"]) if mt5_acc.get("connected") and mt5_acc.get("login") else None
+    recommended_port = ensure_portfolio_for_mt5_account(db, mt5_acc) if active_mt5_login else None
+
     ports = db.query(PortfolioModel).order_by(PortfolioModel.created_at.asc()).all()
     if not ports:
-        # Auto-detect MT5 account if connected
-        mt5_acc = get_connected_mt5_account_info()
-        if mt5_acc.get("connected"):
-            acc_login = mt5_acc.get("login")
-            acc_curr = mt5_acc.get("currency", "USC")
-            acc_bal = float(mt5_acc.get("balance", 1000.0))
-            default_port = PortfolioModel(
-                id="port_main",
-                name=f"Exness MT5 #{acc_login} ({acc_curr})",
-                account_login=acc_login,
-                initial_capital=acc_bal,
-                risk_per_trade_percent=1.0,
-                currency=acc_curr,
-                description=f"พอร์ตหลักเชื่อมต่อกับ Exness MT5 #{acc_login}"
-            )
-        else:
-            default_port = PortfolioModel(
-                id="port_main",
-                name="Main Portfolio (Trading Journal Pro)",
-                account_login="Default",
-                initial_capital=1000.0,
-                risk_per_trade_percent=1.0,
-                currency="USD",
-                description="พอร์ตหลักตามโครงสร้าง Trading Journal Pro Template"
-            )
+        default_port = PortfolioModel(
+            id="port_main",
+            name="Main Portfolio (Trading Journal Pro)",
+            account_login="Default",
+            initial_capital=1000.0,
+            risk_per_trade_percent=1.0,
+            currency="USD",
+            description="พอร์ตหลักตามโครงสร้าง Trading Journal Pro Template"
+        )
         db.add(default_port)
         db.commit()
         db.refresh(default_port)
@@ -932,7 +926,11 @@ def list_portfolios(db: Session = Depends(get_db)):
             "description": p.description,
             "trades_count": trade_count
         })
-    return {"portfolios": res}
+    return {
+        "portfolios": res,
+        "active_mt5_login": active_mt5_login,
+        "recommended_portfolio_id": recommended_port.id if recommended_port else (res[0]["id"] if res else None),
+    }
 
 @app.post("/api/portfolios")
 def create_or_update_portfolio(req: PortfolioCreateReq, db: Session = Depends(get_db)):
@@ -1305,6 +1303,8 @@ def seed_sample_journal_data(portfolio_id: str, db: Session = Depends(get_db)):
 @app.post("/api/portfolios/{portfolio_id}/sync-mt5")
 def sync_portfolio_with_mt5(portfolio_id: str, days_back: int = Query(90), db: Session = Depends(get_db)):
     result = sync_mt5_deals_to_portfolio(portfolio_id=portfolio_id, db=db, days_back=days_back)
+    if result.get("status") == "ACCOUNT_MISMATCH":
+        raise HTTPException(status_code=409, detail=result.get("message"))
     if result.get("status") == "ERROR":
         raise HTTPException(status_code=400, detail=result.get("message"))
     return result

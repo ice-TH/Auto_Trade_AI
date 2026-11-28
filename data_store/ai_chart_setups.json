@@ -1,18 +1,1 @@
-{
-  "XAUUSD": {
-    "symbol": "XAUUSD",
-    "direction": "BUY",
-    "status": "WAITING_ZONE",
-    "entry_price": 0.0,
-    "stop_loss": 3611.0,
-    "take_profit": 3635.0,
-    "rr_ratio": 0.0,
-    "zone_low": 3611.54,
-    "zone_high": 3619.28,
-    "title": "AI Trader (BUY)",
-    "reason": "Watching Fresh Demand 15m (RBR) + Confirmed Fibo 50% (3618.72) + H1 Role Reversal; no blind limit vs M15 BOS_BEAR",
-    "timeframe": "5m",
-    "source": "AI_TRADER",
-    "updated_at": "2026-11-27T14:46:57.779363+00:00"
-  }
-}
+{}

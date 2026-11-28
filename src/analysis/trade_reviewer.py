@@ -46,7 +46,6 @@ def sync_and_review_all() -> Dict[str, Any]:
     acc_info = mt5.account_info()
     current_login_str = str(acc_info.login) if acc_info else "UNKNOWN"
     is_cent = (acc_info.currency.upper() == "USC") if acc_info else False
-    mt5.shutdown()
 
     if not deals:
         return {"status": "SUCCESS", "synced_count": 0, "message": "No deals found"}
@@ -55,9 +54,13 @@ def sync_and_review_all() -> Dict[str, Any]:
     synced_deals = []
     
     try:
-        # Resolve default risk in USD from primary portfolio (fallback to 10.0 USD)
+        # Resolve default risk in USD from portfolio matching current MT5 account (fallback to first)
         default_risk_usd = 10.0
-        primary_port = db.query(PortfolioModel).order_by(PortfolioModel.id.asc()).first()
+        primary_port = db.query(PortfolioModel).filter(
+            PortfolioModel.account_login == current_login_str
+        ).order_by(PortfolioModel.created_at.asc()).first()
+        if not primary_port:
+            primary_port = db.query(PortfolioModel).order_by(PortfolioModel.id.asc()).first()
         if primary_port and primary_port.initial_capital and primary_port.risk_per_trade_percent:
             port_risk = primary_port.initial_capital * (primary_port.risk_per_trade_percent / 100.0)
             if primary_port.currency == "USC":
@@ -87,8 +90,11 @@ def sync_and_review_all() -> Dict[str, Any]:
             profit_usd = raw_profit / 100.0 if is_cent else raw_profit
             profit_thb = profit_usd * 35.0
 
-            # Reuse journal R-multiple if synced, else compute from default portfolio risk
-            journal_match = db.query(JournalTradeModel).filter(JournalTradeModel.mt5_ticket == d.ticket).first()
+            # Reuse journal R-multiple if synced to this account's portfolio, else compute from account risk
+            jq = db.query(JournalTradeModel).filter(JournalTradeModel.mt5_ticket == d.ticket)
+            if primary_port:
+                jq = jq.filter(JournalTradeModel.portfolio_id == primary_port.id)
+            journal_match = jq.first()
             if journal_match and journal_match.r_multiple is not None:
                 r_multiple = float(journal_match.r_multiple)
             else:
@@ -208,14 +214,18 @@ def get_playbook_content() -> str:
                 return f.read()
         return "Playbook is currently empty."
 
-def get_recent_cases(limit: int = 20) -> List[Dict[str, Any]]:
-    """Retrieve recent case studies and trade history from SQLite."""
+def get_recent_cases(limit: int = 20, account_login: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieve recent case studies and trade history from SQLite, optionally filtered by account_login."""
     db = SessionLocal()
     try:
-        records = db.query(TradeHistoryModel).order_by(TradeHistoryModel.close_time.desc()).limit(limit).all()
+        query = db.query(TradeHistoryModel)
+        if account_login:
+            query = query.filter(TradeHistoryModel.account_login == str(account_login))
+        records = query.order_by(TradeHistoryModel.close_time.desc()).limit(limit).all()
         return [
             {
                 "ticket": r.ticket,
+                "account_login": r.account_login,
                 "symbol": r.symbol,
                 "direction": r.direction,
                 "volume": r.volume,

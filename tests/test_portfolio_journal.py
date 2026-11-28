@@ -7,16 +7,22 @@ from src.storage.models import PortfolioModel, JournalTradeModel
 
 client = TestClient(app)
 
+def _cleanup_journal_tests():
+    db = SessionLocal()
+    try:
+        db.query(JournalTradeModel).filter(JournalTradeModel.portfolio_id.in_(["test_port_a", "test_port_b"])).delete(synchronize_session=False)
+        db.query(PortfolioModel).filter(PortfolioModel.id.in_(["test_port_a", "test_port_b"])).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
 @pytest.fixture(autouse=True)
 def clean_db():
     init_db()
-    db = SessionLocal()
-    # Clean up test portfolios
-    db.query(JournalTradeModel).filter(JournalTradeModel.portfolio_id.in_(["test_port_a", "test_port_b"])).delete(synchronize_session=False)
-    db.query(PortfolioModel).filter(PortfolioModel.id.in_(["test_port_a", "test_port_b"])).delete(synchronize_session=False)
-    db.commit()
-    db.close()
+    _cleanup_journal_tests()
     yield
+    _cleanup_journal_tests()
 
 def test_portfolio_creation_and_listing():
     # 1. Create Portfolio A

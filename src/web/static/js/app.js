@@ -11,6 +11,9 @@ let aiSetupPrimitive = null;
 let aiSetupPayload = null;
 let chartTickCounter = 0;
 let currentTrackingLine = null;
+let lastKnownMt5Login = null;
+let activeDataSourceType = "MT5";
+let accountWatchInterval = null;
 
 // Initialize on Load
 document.addEventListener("DOMContentLoaded", () => {
@@ -20,6 +23,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loadOverviewSymbols();
     loadChartData(currentSymbol, currentTimeframe);
     startChartPolling(); // Enable live real-time chart polling immediately
+    startAccountSwitchWatcher();
   });
   loadSystemStatus();
   loadZones(currentSymbol);
@@ -29,17 +33,33 @@ document.addEventListener("DOMContentLoaded", () => {
   loadScreenshots();
 });
 
+function startAccountSwitchWatcher() {
+  if (accountWatchInterval) clearInterval(accountWatchInterval);
+  accountWatchInterval = setInterval(() => {
+    if (activeDataSourceType === "MT5") {
+      loadDataSourceStatus();
+    }
+  }, 10000);
+}
+
 // Data Source Switcher
 async function loadDataSourceStatus() {
   try {
     const res = await fetch("/api/data-source");
     const data = await res.json();
+    activeDataSourceType = data.active_source || "MOCK";
     const select = document.getElementById("select-data-source");
     if (select) select.value = data.active_source;
 
     const pillData = document.getElementById("pill-data-status");
     const pillAccount = document.getElementById("pill-account-badge");
     const valAccount = document.getElementById("val-account-login");
+
+    const newLogin = (data.active_source === "MT5" && data.account_login) ? String(data.account_login) : null;
+    const accountChanged = (lastKnownMt5Login !== null && newLogin !== null && lastKnownMt5Login !== newLogin);
+    if (newLogin) {
+      lastKnownMt5Login = newLogin;
+    }
 
     if (data.active_source === "MT5") {
       pillData.innerText = "DATA: EXNESS LIVE";
@@ -70,6 +90,21 @@ async function loadDataSourceStatus() {
       pillData.style.color = "";
       pillData.style.borderColor = "";
       pillAccount.style.display = "none";
+    }
+
+    if (accountChanged) {
+      loadSystemStatus();
+      const activePane = document.querySelector(".tab-pane.active");
+      if (activePane) {
+        if (activePane.id === "tab-journal") {
+          loadJournalPortfolios(true);
+        } else if (activePane.id === "tab-memory") {
+          loadMemoryCases();
+        } else if (activePane.id === "tab-orders") {
+          loadMT5Status();
+          loadMT5Positions();
+        }
+      }
     }
   } catch (err) {
     console.error("Failed to load data source status:", err);
@@ -238,6 +273,10 @@ function switchTab(tabId) {
   }
   document.getElementById(`tab-${tabId}`).classList.add("active");
 
+  // Keep top-bar account badge and capital synchronized on tab switches
+  loadDataSourceStatus();
+  loadSystemStatus();
+
   // Real-time polling: active only on orders tab
   if (tabId === "orders") {
     loadMT5Status();
@@ -269,7 +308,7 @@ function switchTab(tabId) {
   }
 
   if (tabId === "journal") {
-    loadJournalPortfolios();
+    loadJournalPortfolios(true);
   }
 
   if (tabId === "plans") {
@@ -300,7 +339,8 @@ async function loadMemoryPlaybook() {
 
 async function loadMemoryCases() {
   try {
-    const res = await fetch("/api/memory/cases");
+    const accQuery = lastKnownMt5Login ? `?account_login=${encodeURIComponent(lastKnownMt5Login)}` : "";
+    const res = await fetch(`/api/memory/cases${accQuery}`);
     const data = await res.json();
     const container = document.getElementById("cases-list-container");
     if (!container) return;
@@ -308,7 +348,8 @@ async function loadMemoryCases() {
 
     const cases = data.cases || [];
     if (cases.length === 0) {
-      container.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 30px;">No closed trade cases found yet.</div>`;
+      const accLabel = lastKnownMt5Login ? ` สำหรับบัญชี #${lastKnownMt5Login}` : "";
+      container.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 30px;">ยังไม่มีเคสประวัติการเทรด${accLabel}</div>`;
       return;
     }
 
@@ -317,11 +358,12 @@ async function loadMemoryCases() {
       const isLoss = c.profit_usd < 0;
       const badgeText = isWin ? 'ชนะ (WIN)' : (isLoss ? 'แพ้ (LOSS)' : 'เสมอตัว (BE)');
       const badgeClass = isWin ? 'badge-ready' : (isLoss ? 'badge-rejected' : 'badge-active');
+      const accTag = c.account_login ? `<span style="font-size: 10.5px; color: var(--text-muted); font-weight: 500; margin-left: 6px;">[Acc #${c.account_login}]</span>` : "";
       const card = document.createElement("div");
       card.style.cssText = "background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px; display: flex; flex-direction: column; gap: 6px;";
       card.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <strong style="font-size: 13px;">#${c.ticket} - ${c.symbol} (${c.direction})</strong>
+          <strong style="font-size: 13px;">#${c.ticket} - ${c.symbol} (${c.direction})${accTag}</strong>
           <span class="dime-plan-badge ${badgeClass}" style="font-size: 11px;">
             ${badgeText} (${isWin ? '+' : ''}$${c.profit_usd.toFixed(2)})
           </span>
@@ -1368,7 +1410,7 @@ class AISetupPrimitive {
     if (this._requestUpdate) this._requestUpdate();
   }
 
-  updateAllViews() {}
+  updateAllViews() { }
 
   paneViews() {
     if (!this._visible || !this._data || !this._series) return [];
@@ -1531,7 +1573,7 @@ async function loadAISetup(symbol) {
 
 function clearAISetupOverlay() {
   aiSetupPriceLines.forEach(pl => {
-    try { candleSeries?.removePriceLine(pl); } catch (_) {}
+    try { candleSeries?.removePriceLine(pl); } catch (_) { }
   });
   aiSetupPriceLines = [];
   if (aiSetupPrimitive) aiSetupPrimitive.setData(null, false);
@@ -1547,7 +1589,7 @@ function renderAISetupOverlay() {
   }
 
   aiSetupPriceLines.forEach(pl => {
-    try { candleSeries?.removePriceLine(pl); } catch (_) {}
+    try { candleSeries?.removePriceLine(pl); } catch (_) { }
   });
   aiSetupPriceLines = [];
 
@@ -1837,31 +1879,45 @@ function setJournalMetricMode(mode) {
   }
 }
 
-async function loadJournalPortfolios() {
+async function loadJournalPortfolios(autoSelectConnected = false) {
   try {
     const res = await fetch("/api/portfolios");
     const data = await res.json();
     const select = document.getElementById("jp-portfolio-select");
     if (!select) return;
 
+    const portfolios = data.portfolios || [];
+    const activeMt5Login = data.active_mt5_login ? String(data.active_mt5_login) : null;
+    const recommendedId = data.recommended_portfolio_id || null;
+
     select.innerHTML = "";
-    (data.portfolios || []).forEach(p => {
+    portfolios.forEach(p => {
       const opt = document.createElement("option");
       opt.value = p.id;
       opt.textContent = `${p.name} (${p.currency || 'USD'} ${p.initial_capital || 1000})`;
       select.appendChild(opt);
     });
 
-    if (!activeJournalPortfolioId && data.portfolios && data.portfolios.length > 0) {
-      activeJournalPortfolioId = data.portfolios[0].id;
+    if ((autoSelectConnected || !activeJournalPortfolioId) && recommendedId) {
+      activeJournalPortfolioId = recommendedId;
+    } else if (!activeJournalPortfolioId && portfolios.length > 0) {
+      activeJournalPortfolioId = portfolios[0].id;
+    } else if (activeJournalPortfolioId && !portfolios.some(p => p.id === activeJournalPortfolioId)) {
+      activeJournalPortfolioId = recommendedId || (portfolios[0] ? portfolios[0].id : null);
     }
 
     if (activeJournalPortfolioId) {
       select.value = activeJournalPortfolioId;
       await loadJournalDashboard(activeJournalPortfolioId);
       await loadJournalTrades();
-      // Auto-sync live MT5 orders in background
-      syncMT5ToJournal(true);
+
+      // Auto-sync ONLY when the selected portfolio belongs to the currently connected MT5 account
+      const selectedPort = portfolios.find(p => p.id === activeJournalPortfolioId);
+      const portLogin = selectedPort && selectedPort.account_login ? String(selectedPort.account_login) : null;
+      const canAutoSync = activeMt5Login && (!portLogin || portLogin === "Default" || portLogin === activeMt5Login);
+      if (canAutoSync) {
+        syncMT5ToJournal(true);
+      }
     }
   } catch (err) {
     console.error("Failed to load journal portfolios:", err);
@@ -1881,7 +1937,7 @@ async function loadJournalDashboard(portfolioId) {
     const data = await res.json();
     cachedJournalDashboardData = data;
 
-    // 1. Update Portfolio Header Context
+    // 1. Update Portfolio Header Context & keep dropdown option label in sync
     const p = data.portfolio;
     const capEl = document.getElementById("jp-cap-pill");
     const riskEl = document.getElementById("jp-risk-pill");
@@ -1890,25 +1946,56 @@ async function loadJournalDashboard(portfolioId) {
     if (riskEl) riskEl.textContent = `RISK: ${p.risk_per_trade_percent}% (${formatPortMoney(p.risk_amount_per_trade, p.currency)}/ไม้)`;
     if (accEl) accEl.textContent = `ACCOUNT: ${p.account_login || 'DEFAULT'}`;
 
+    const selectEl = document.getElementById("jp-portfolio-select");
+    if (selectEl) {
+      const opt = Array.from(selectEl.options).find(o => o.value === portfolioId);
+      if (opt) {
+        opt.textContent = `${p.name} (${p.currency || 'USD'} ${p.initial_capital || 1000})`;
+      }
+    }
+
     // Check MT5 connection status for this portfolio
     try {
       const mt5Res = await fetch(`/api/portfolios/${portfolioId}/mt5-status`);
       if (mt5Res.ok) {
         const mt5Data = await mt5Res.json();
         const mt5Pill = document.getElementById("jp-mt5-status-pill");
+        const syncBtn = document.getElementById("btn-sync-mt5");
         if (mt5Pill) {
           if (mt5Data.mt5_info && mt5Data.mt5_info.connected) {
             const accNum = mt5Data.mt5_info.login;
             const accCurr = mt5Data.mt5_info.is_cent ? "USC Cent" : mt5Data.mt5_info.currency;
-            mt5Pill.textContent = `🟢 MT5: #${accNum} (${accCurr})`;
-            mt5Pill.style.background = "var(--dime-green-bg)";
-            mt5Pill.style.color = "var(--dime-green)";
-            mt5Pill.style.border = "1px solid rgba(16, 185, 129, 0.4)";
+            if (mt5Data.matches_account) {
+              mt5Pill.textContent = `🟢 MT5: #${accNum} (${accCurr})`;
+              mt5Pill.style.background = "var(--dime-green-bg)";
+              mt5Pill.style.color = "var(--dime-green)";
+              mt5Pill.style.border = "1px solid rgba(16, 185, 129, 0.4)";
+              if (syncBtn) {
+                syncBtn.disabled = false;
+                syncBtn.title = "ซิงก์ประวัติการเทรดจาก MT5 เข้าพอร์ตนี้";
+                syncBtn.style.opacity = "1";
+              }
+            } else {
+              mt5Pill.textContent = `⚠️ MT5: #${accNum} (คนละบัญชีกับพอร์ตนี้)`;
+              mt5Pill.style.background = "rgba(245, 158, 11, 0.14)";
+              mt5Pill.style.color = "#d97706";
+              mt5Pill.style.border = "1px solid rgba(245, 158, 11, 0.45)";
+              if (syncBtn) {
+                syncBtn.disabled = true;
+                syncBtn.title = `ไม่สามารถซิงก์ได้: พอร์ตนี้ผูกกับบัญชี #${mt5Data.portfolio_account} แต่ MT5 เชื่อมต่อ #${accNum}`;
+                syncBtn.style.opacity = "0.55";
+              }
+            }
           } else {
             mt5Pill.textContent = `⚪ MT5: DISCONNECTED`;
             mt5Pill.style.background = "#f1f5f9";
             mt5Pill.style.color = "var(--text-muted)";
             mt5Pill.style.border = "1px solid var(--border-color)";
+            if (syncBtn) {
+              syncBtn.disabled = false;
+              syncBtn.title = "";
+              syncBtn.style.opacity = "1";
+            }
           }
         }
       }
